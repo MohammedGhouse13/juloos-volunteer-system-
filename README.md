@@ -1,73 +1,40 @@
 # Juloos Volunteer Management System
 
-A self-contained Node.js + PostgreSQL volunteer portal designed for Render.
+Production-oriented Node.js/Express/PostgreSQL volunteer registration portal.
 
-## Included
+## Render deployment
 
-- Mobile-first public registration
-- Camera-only live-photo capture (no gallery picker)
-- Aadhaar image/PDF upload
-- Server-side OCR and strict Aadhaar-number comparison
-- Registration is NOT created when the OCR-readable Aadhaar number does not match
-- Duplicate Aadhaar/mobile detection
-- Encrypted Aadhaar storage (AES-256-GCM)
-- Masked Aadhaar in normal admin lists
-- Authorized full-Aadhaar reveal with audit log
-- Admin login
-- Dashboard and searchable volunteer database
-- Batch creation and assignment
-- Sequential registration numbers
-- Volunteer IDs
-- Approval/rejection workflow
-- Printable volunteer ID cards
-- Local QR generation and public ID verification
-- PostgreSQL persistence for volunteer photos/documents
+### Existing Render web service
+Use:
+- Build: `npm install`
+- Start: `npm start`
+- Node: 20.20.2 (via `.nvmrc`)
 
-## Deploy on Render
-
-The included `render.yaml` is a Blueprint that creates a web service and PostgreSQL database.
-
-If deploying manually, create a Render PostgreSQL database and set:
-
-- `DATABASE_URL`
-- `ADMIN_EMAIL`
-- `ADMIN_PASSWORD`
-- `SESSION_SECRET`
-- `DATA_ENCRYPTION_KEY`
+Environment variables:
+- `DATABASE_URL` — Render PostgreSQL Internal Database URL
+- `ADMIN_EMAIL` — administrator email
+- `ADMIN_PASSWORD` — administrator password
+- `SESSION_SECRET` — long random secret
+- `DATA_ENCRYPTION_KEY` — long random secret used to encrypt Aadhaar numbers
 - `NODE_ENV=production`
 - `OCR_ENABLED=true`
 - `MAX_UPLOAD_MB=10`
-- `BASE_URL=https://YOUR-SERVICE.onrender.com`
 
-The app creates its tables automatically on startup.
+### Existing database migration
+This version automatically migrates the `volunteers`, `batches`, and `audit_logs` tables at startup. It is specifically compatible with older database schemas and adds missing columns such as `mobile` before creating indexes.
 
-## Important security notes
+### Fresh Blueprint deployment
+The included `render.yaml` can create a web service and PostgreSQL database together via Render Blueprint. Set `ADMIN_EMAIL` and `ADMIN_PASSWORD` when prompted.
 
-1. Do not commit `.env` or real Aadhaar documents.
-2. Keep the GitHub repository private.
-3. Keep `DATA_ENCRYPTION_KEY` stable after real records are stored. Changing it makes existing encrypted Aadhaar values unreadable.
-4. The app uses PostgreSQL `bytea` for uploaded documents, so files persist with the database instead of Render's ephemeral web-service filesystem.
-5. Normal admin screens show only masked Aadhaar.
-6. The live-photo flow captures from the browser camera and does not accept a normal file picker. This is a capture-control, not a biometric anti-spoof guarantee.
-7. OCR matching verifies that the uploaded document contains the same number the volunteer entered. It is NOT official UIDAI authentication.
-8. For large-scale production, use an appropriate secure object-storage and identity-verification architecture after reviewing applicable privacy/legal requirements.
+## Features
+- Live browser camera capture for volunteer photo; gallery selection is not accepted for the live-photo field.
+- Aadhaar document upload and strict OCR number comparison against the entered 12-digit Aadhaar number.
+- Duplicate Aadhaar and mobile checks.
+- Admin login, dashboard, volunteer database, search, approval/rejection, batch assignment, audit logging and ID cards.
+- Full Aadhaar is encrypted at rest and masked by default. Authorized reveal/document viewing is logged.
+- QR code contains only a volunteer verification URL, never Aadhaar data.
 
-## First login
+## Important
+The camera capture is not biometric anti-spoofing and OCR matching is not official UIDAI authentication. Do not describe the system as UIDAI authentication unless an authorized UIDAI service is actually integrated.
 
-Use the values you set for:
-
-`ADMIN_EMAIL`
-
-and
-
-`ADMIN_PASSWORD`
-
-There is no hard-coded admin password.
-
-## Health check
-
-`/health`
-
-## Public ID verification
-
-`/verify/SDI-JUL-26-000001`
+Do not commit `.env` files or real Aadhaar documents to GitHub.

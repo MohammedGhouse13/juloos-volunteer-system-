@@ -127,66 +127,164 @@ app.use((req,res,next)=>{
 
 async function initDb() {
   if(!DATABASE_URL) return;
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS volunteers (
-      id BIGSERIAL PRIMARY KEY,
-      registration_number TEXT UNIQUE NOT NULL,
-      volunteer_id TEXT UNIQUE,
-      full_name TEXT NOT NULL,
-      mobile TEXT NOT NULL,
-      whatsapp TEXT,
-      age INTEGER,
-      gender TEXT,
-      area TEXT,
-      address TEXT,
-      emergency_name TEXT,
-      emergency_mobile TEXT,
-      volunteer_role TEXT,
-      live_photo BYTEA NOT NULL,
-      live_photo_mime TEXT NOT NULL,
-      aadhaar_document BYTEA NOT NULL,
-      aadhaar_mime TEXT NOT NULL,
-      aadhaar_ciphertext BYTEA NOT NULL,
-      aadhaar_iv BYTEA NOT NULL,
-      aadhaar_tag BYTEA NOT NULL,
-      aadhaar_last4 CHAR(4) NOT NULL,
-      ocr_aadhaar_last4 CHAR(4),
-      ocr_name TEXT,
-      ocr_confidence NUMERIC,
-      name_match_score INTEGER,
-      aadhaar_match_status TEXT NOT NULL,
-      approval_status TEXT NOT NULL DEFAULT 'SUBMITTED',
-      batch_id BIGINT,
-      id_card_status TEXT NOT NULL DEFAULT 'PENDING',
-      consent_at TIMESTAMPTZ NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS batches (
-      id BIGSERIAL PRIMARY KEY,
-      batch_code TEXT UNIQUE NOT NULL,
-      batch_name TEXT NOT NULL,
-      leader_name TEXT,
-      leader_mobile TEXT,
-      capacity INTEGER NOT NULL DEFAULT 100,
-      route_area TEXT,
-      meeting_point TEXT,
-      reporting_time TEXT,
-      status TEXT NOT NULL DEFAULT 'OPEN',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE TABLE IF NOT EXISTS audit_logs (
-      id BIGSERIAL PRIMARY KEY,
-      action TEXT NOT NULL,
-      volunteer_id BIGINT,
-      admin_email TEXT,
-      details TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    CREATE INDEX IF NOT EXISTS volunteers_mobile_idx ON volunteers(mobile);
-    CREATE INDEX IF NOT EXISTS volunteers_status_idx ON volunteers(approval_status);
-    CREATE INDEX IF NOT EXISTS volunteers_batch_idx ON volunteers(batch_id);
-  `);
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Create the current schema when this is a brand-new database.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS volunteers (
+        id BIGSERIAL PRIMARY KEY,
+        registration_number TEXT UNIQUE,
+        volunteer_id TEXT UNIQUE,
+        full_name TEXT,
+        mobile TEXT,
+        whatsapp TEXT,
+        age INTEGER,
+        gender TEXT,
+        area TEXT,
+        address TEXT,
+        emergency_name TEXT,
+        emergency_mobile TEXT,
+        volunteer_role TEXT,
+        live_photo BYTEA,
+        live_photo_mime TEXT,
+        aadhaar_document BYTEA,
+        aadhaar_mime TEXT,
+        aadhaar_ciphertext BYTEA,
+        aadhaar_iv BYTEA,
+        aadhaar_tag BYTEA,
+        aadhaar_last4 CHAR(4),
+        ocr_aadhaar_last4 CHAR(4),
+        ocr_name TEXT,
+        ocr_confidence NUMERIC,
+        name_match_score INTEGER,
+        aadhaar_match_status TEXT,
+        approval_status TEXT DEFAULT 'SUBMITTED',
+        batch_id BIGINT,
+        id_card_status TEXT DEFAULT 'PENDING',
+        consent_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS batches (
+        id BIGSERIAL PRIMARY KEY,
+        batch_code TEXT UNIQUE,
+        batch_name TEXT,
+        leader_name TEXT,
+        leader_mobile TEXT,
+        capacity INTEGER DEFAULT 100,
+        route_area TEXT,
+        meeting_point TEXT,
+        reporting_time TEXT,
+        status TEXT DEFAULT 'OPEN',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS audit_logs (
+        id BIGSERIAL PRIMARY KEY,
+        action TEXT,
+        volunteer_id BIGINT,
+        admin_email TEXT,
+        details TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    // IMPORTANT: CREATE TABLE IF NOT EXISTS does not migrate an already-existing
+    // table. Earlier builds of this application used a different schema. Add every
+    // column the current application needs so an existing Render database upgrades
+    // safely instead of failing on the first missing column (such as `mobile`).
+    const volunteerColumns = {
+      registration_number: 'TEXT',
+      volunteer_id: 'TEXT',
+      full_name: 'TEXT',
+      mobile: 'TEXT',
+      whatsapp: 'TEXT',
+      age: 'INTEGER',
+      gender: 'TEXT',
+      area: 'TEXT',
+      address: 'TEXT',
+      emergency_name: 'TEXT',
+      emergency_mobile: 'TEXT',
+      volunteer_role: 'TEXT',
+      live_photo: 'BYTEA',
+      live_photo_mime: 'TEXT',
+      aadhaar_document: 'BYTEA',
+      aadhaar_mime: 'TEXT',
+      aadhaar_ciphertext: 'BYTEA',
+      aadhaar_iv: 'BYTEA',
+      aadhaar_tag: 'BYTEA',
+      aadhaar_last4: 'CHAR(4)',
+      ocr_aadhaar_last4: 'CHAR(4)',
+      ocr_name: 'TEXT',
+      ocr_confidence: 'NUMERIC',
+      name_match_score: 'INTEGER',
+      aadhaar_match_status: 'TEXT',
+      approval_status: "TEXT DEFAULT 'SUBMITTED'",
+      batch_id: 'BIGINT',
+      id_card_status: "TEXT DEFAULT 'PENDING'",
+      consent_at: 'TIMESTAMPTZ',
+      created_at: 'TIMESTAMPTZ DEFAULT NOW()',
+      updated_at: 'TIMESTAMPTZ DEFAULT NOW()'
+    };
+    for (const [column, definition] of Object.entries(volunteerColumns)) {
+      await client.query(`ALTER TABLE volunteers ADD COLUMN IF NOT EXISTS ${column} ${definition}`);
+    }
+
+    const batchColumns = {
+      batch_code: 'TEXT', batch_name: 'TEXT', leader_name: 'TEXT', leader_mobile: 'TEXT',
+      capacity: 'INTEGER DEFAULT 100', route_area: 'TEXT', meeting_point: 'TEXT',
+      reporting_time: 'TEXT', status: "TEXT DEFAULT 'OPEN'", created_at: 'TIMESTAMPTZ DEFAULT NOW()'
+    };
+    for (const [column, definition] of Object.entries(batchColumns)) {
+      await client.query(`ALTER TABLE batches ADD COLUMN IF NOT EXISTS ${column} ${definition}`);
+    }
+
+    const auditColumns = {
+      action: 'TEXT', volunteer_id: 'BIGINT', admin_email: 'TEXT', details: 'TEXT', created_at: 'TIMESTAMPTZ DEFAULT NOW()'
+    };
+    for (const [column, definition] of Object.entries(auditColumns)) {
+      await client.query(`ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS ${column} ${definition}`);
+    }
+
+    // Recover common column names used by older builds if they exist.
+    const existing = await client.query(`
+      SELECT table_name, column_name
+      FROM information_schema.columns
+      WHERE table_schema='public' AND table_name IN ('volunteers','batches')
+    `);
+    const cols = new Set(existing.rows.map(r => `${r.table_name}.${r.column_name}`));
+    if (cols.has('volunteers.phone') && cols.has('volunteers.mobile')) {
+      await client.query(`UPDATE volunteers SET mobile=phone WHERE (mobile IS NULL OR mobile='') AND phone IS NOT NULL`);
+    }
+    if (cols.has('volunteers.phone_number') && cols.has('volunteers.mobile')) {
+      await client.query(`UPDATE volunteers SET mobile=phone_number WHERE (mobile IS NULL OR mobile='') AND phone_number IS NOT NULL`);
+    }
+
+    // Indexes are intentionally created after migration so an old table that lacked
+    // `mobile` cannot fail during startup.
+    await client.query(`CREATE INDEX IF NOT EXISTS volunteers_mobile_idx ON volunteers(mobile)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS volunteers_status_idx ON volunteers(approval_status)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS volunteers_batch_idx ON volunteers(batch_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS volunteers_aadhaar_last4_idx ON volunteers(aadhaar_last4)`);
+
+    // Keep defaults available on legacy rows created before this version.
+    await client.query(`UPDATE volunteers SET approval_status='SUBMITTED' WHERE approval_status IS NULL`);
+    await client.query(`UPDATE volunteers SET id_card_status='PENDING' WHERE id_card_status IS NULL`);
+    await client.query(`UPDATE volunteers SET created_at=NOW() WHERE created_at IS NULL`);
+    await client.query(`UPDATE volunteers SET updated_at=NOW() WHERE updated_at IS NULL`);
+
+    await client.query('COMMIT');
+    console.log('Database initialization/migration completed successfully.');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 const dbReady = initDb().catch(e=>console.error('Database initialization failed:',e));
 
