@@ -18,9 +18,9 @@
 <hr><h2>2. Aadhaar Details</h2>
 <div class="privacy-box">Enter your 12-digit Aadhaar number. It will be stored securely and is available only to authorized administrators for manual review. The system does <strong>not</strong> perform OCR or automatic Aadhaar-document matching.</div>
 <label>Aadhaar number*<input name="aadhaar" required inputmode="numeric" pattern="[2-9][0-9]{11}" maxlength="12" placeholder="12 digits" autocomplete="off"></label>
-<hr><h2>3. Live Photo</h2>
+<hr><h2>3. Profile photo</h2>
 <p class="muted">Gallery uploads are not accepted. Allow camera access and capture a fresh photo now.</p>
-<div class="camera"><video id="video" autoplay playsinline muted></video><canvas id="canvas"></canvas><img id="preview" alt="Live photo preview"><div class="actions"><button type="button" class="btn" id="startCamera">Open Camera</button><button type="button" class="btn gold" id="capture" disabled>Capture Live Photo</button><button type="button" class="btn outline" id="retake" disabled>Retake</button></div></div>
+<div class="camera"><video id="video" autoplay playsinline muted></video><canvas id="canvas"></canvas><img id="preview" alt="Profile photo preview"><div class="actions"><button type="button" class="btn gold" id="capture" disabled>Capture Profile photo</button><button type="button" class="btn outline" id="retake" disabled>Retake</button></div></div>
 <input type="file" id="livePhotoFile" name="live_photo" accept="image/jpeg" hidden>
 <input type="hidden" name="live_capture_confirm" id="liveCaptureConfirm" value="0">
 <div class="notice">Camera capture checks that a live camera stream was used in this browser. It is not a biometric anti-spoof/face-recognition service; do not use the camera feature as proof of identity.</div>
@@ -31,9 +31,9 @@
 <script>
 let stream=null, captured=false;
 const video=document.getElementById('video'), canvas=document.getElementById('canvas'), preview=document.getElementById('preview');
-const capture=document.getElementById('capture'), retake=document.getElementById('retake'), start=document.getElementById('startCamera');
+
 async function openCamera(){
- try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}},audio:false});video.srcObject=stream;capture.disabled=false;start.disabled=true;}
+
  catch(e){alert('Camera permission is required. Please allow camera access and try again.');}
 }
 start.onclick=openCamera;
@@ -49,7 +49,7 @@ capture.onclick=()=>{
  },'image/jpeg',0.9);
 };
 retake.onclick=()=>{captured=false;document.getElementById('liveCaptureConfirm').value='0';document.getElementById('submitBtn').disabled=true;preview.hidden=true;video.hidden=false;start.disabled=false;openCamera();};
-function validateRegistration(){ if(!captured){alert('Please capture your live photo first.');return false;} return true; }
+function validateRegistration(){ if(!captured){alert('Please capture your Profile photo first.');return false;} return true; }
 preview.hidden=true;
 </script>
 <%- include('partials-foot') %>

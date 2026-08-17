@@ -28,7 +28,7 @@ const upload = multer({
   limits: { fileSize: MAX_FILE_BYTES, files: 1 },
   fileFilter: (req, file, cb) => {
     const ok = ['image/jpeg','image/png','image/webp'].includes(file.mimetype);
-    cb(ok ? null : new Error('Live photo must be a JPG, PNG or WEBP image.'));
+    cb(ok ? null : new Error('Profile photo must be a JPG, PNG or WEBP image.'));
   }
 });
 
@@ -287,8 +287,8 @@ app.post('/register',
     }
 
     const photo=req.file;
-    if(!photo) throw new Error('Please capture your live photo using the camera.');
-    if(!photo.mimetype.startsWith('image/')) throw new Error('Live photo must be an image.');
+    if(!photo) throw new Error('Please capture your Profile photo using the camera.');
+    if(!photo.mimetype.startsWith('image/')) throw new Error('Profile photo must be an image.');
     if(f.live_capture_confirm!=='1') throw new Error('Please capture the photo using the live camera.');
     if(f.consent!=='1') throw new Error('You must accept the consent before submitting.');
 
