@@ -1,0 +1,57 @@
+<%- include('partials-head',{title,appName}) %>
+<div class="page-head"><div><span class="pill">VOLUNTEER REGISTRATION</span><h1>Register for the Juloos</h1><p>Complete every required step. Your Aadhaar number must match the uploaded document.</p></div></div>
+<% if (error) { %><div class="alert danger"><%= error %></div><% } %>
+<form class="card form" method="post" action="/register" enctype="multipart/form-data" onsubmit="return validateRegistration()">
+<h2>1. Personal Details</h2>
+<div class="grid two">
+<label>Full name*<input name="full_name" required maxlength="120" autocomplete="name"></label>
+<label>Mobile number*<input name="mobile" required inputmode="numeric" pattern="[6-9][0-9]{9}" maxlength="10" placeholder="10-digit Indian mobile"></label>
+<label>WhatsApp number<input name="whatsapp" inputmode="numeric" pattern="[6-9][0-9]{9}" maxlength="10" placeholder="Leave blank if same"></label>
+<label>Age<input name="age" type="number" min="12" max="80"></label>
+<label>Gender<select name="gender"><option value="">Select</option><option>Male</option><option>Female</option></select></label>
+<label>Area / locality<input name="area" maxlength="120"></label>
+<label>Volunteer role<select name="volunteer_role"><option value="">Select role</option><option>General Volunteer</option><option>Route / Crowd Management</option><option>Medical / First Aid</option><option>Water / Refreshment</option><option>Transport</option><option>Media / Documentation</option><option>Other</option></select></label>
+<label>Address<textarea name="address" rows="2"></textarea></label>
+<label>Emergency contact name<input name="emergency_name"></label>
+<label>Emergency contact mobile<input name="emergency_mobile" inputmode="numeric" pattern="[6-9][0-9]{9}" maxlength="10"></label>
+</div>
+<hr><h2>2. Aadhaar Verification</h2>
+<div class="privacy-box">Enter the 12-digit Aadhaar number and upload a clear image/PDF. The server will OCR the document and <strong>the registration will not be created unless the number read from the document matches the number entered.</strong></div>
+<label>Aadhaar number*<input name="aadhaar" required inputmode="numeric" pattern="[2-9][0-9]{11}" maxlength="12" placeholder="12 digits" autocomplete="off"></label>
+<label>Aadhaar document* <input type="file" name="aadhaar_document" required accept="image/jpeg,image/png,image/webp,application/pdf"></label>
+<small>Use a clear, uncropped document. Maximum upload size: 10 MB.</small>
+<hr><h2>3. Live Photo</h2>
+<p class="muted">Gallery uploads are not accepted. Allow camera access and capture a fresh photo now.</p>
+<div class="camera"><video id="video" autoplay playsinline muted></video><canvas id="canvas"></canvas><img id="preview" alt="Live photo preview"><div class="actions"><button type="button" class="btn" id="startCamera">Open Camera</button><button type="button" class="btn gold" id="capture" disabled>Capture Live Photo</button><button type="button" class="btn outline" id="retake" disabled>Retake</button></div></div>
+<input type="file" id="livePhotoFile" name="live_photo" accept="image/jpeg" hidden>
+<input type="hidden" name="live_capture_confirm" id="liveCaptureConfirm" value="0">
+<div class="notice">Camera capture checks that a live camera stream was used in this browser. It is not a biometric anti-spoof/face-recognition service; do not use the system as proof of identity beyond the stated document match.</div>
+<hr><h2>4. Consent</h2>
+<label class="check"><input type="checkbox" name="consent" value="1" required> I confirm that the information and Aadhaar document submitted by me are mine and I consent to their use for Juloos volunteer registration, identity-document comparison, coordination, batch assignment and ID-card issuance.</label>
+<button class="btn gold large" type="submit" id="submitBtn" disabled>Submit Registration</button>
+</form>
+<script>
+let stream=null, captured=false;
+const video=document.getElementById('video'), canvas=document.getElementById('canvas'), preview=document.getElementById('preview');
+const capture=document.getElementById('capture'), retake=document.getElementById('retake'), start=document.getElementById('startCamera');
+async function openCamera(){
+ try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}},audio:false});video.srcObject=stream;capture.disabled=false;start.disabled=true;}
+ catch(e){alert('Camera permission is required. Please allow camera access and try again.');}
+}
+start.onclick=openCamera;
+capture.onclick=()=>{
+ if(!stream) return;
+ canvas.width=video.videoWidth;canvas.height=video.videoHeight;canvas.getContext('2d').drawImage(video,0,0);
+ canvas.toBlob(blob=>{
+   const file=new File([blob],'live-photo.jpg',{type:'image/jpeg'});
+   const dt=new DataTransfer();dt.items.add(file);document.getElementById('livePhotoFile').files=dt.files;
+   preview.src=URL.createObjectURL(blob);preview.hidden=false;captured=true;
+   document.getElementById('liveCaptureConfirm').value='1';retake.disabled=false;document.getElementById('submitBtn').disabled=false;
+   stream.getTracks().forEach(t=>t.stop());stream=null;video.hidden=true;
+ },'image/jpeg',0.9);
+};
+retake.onclick=()=>{captured=false;document.getElementById('liveCaptureConfirm').value='0';document.getElementById('submitBtn').disabled=true;preview.hidden=true;video.hidden=false;start.disabled=false;openCamera();};
+function validateRegistration(){ if(!captured){alert('Please capture your live photo first.');return false;} return true; }
+preview.hidden=true;
+</script>
+<%- include('partials-foot') %>

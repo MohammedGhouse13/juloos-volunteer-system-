@@ -1,0 +1,464 @@
+
+const express = require('express');
+const helmet = require('helmet');
+const cookieParser = require('cookie-parser');
+const crypto = require('crypto');
+const { Pool } = require('pg');
+const multer = require('multer');
+const sharp = require('sharp');
+const pdfParse = require('pdf-parse');
+const { createWorker } = require('tesseract.js');
+const path = require('path');
+
+const app = express();
+const PORT = Number(process.env.PORT || 10000);
+const APP_NAME = 'Juloos Volunteer Management System';
+const MAX_UPLOAD_MB = Math.max(2, Number(process.env.MAX_UPLOAD_MB || 10));
+const MAX_FILE_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
+const DATABASE_URL = process.env.DATABASE_URL;
+
+if (!DATABASE_URL) console.warn('DATABASE_URL is not set. The app cannot save registrations until PostgreSQL is configured.');
+
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  max: 5,
+  idleTimeoutMillis: 30000
+});
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_FILE_BYTES, files: 2 },
+  fileFilter: (req, file, cb) => {
+    const ok = [
+      'image/jpeg','image/png','image/webp','application/pdf'
+    ].includes(file.mimetype);
+    cb(ok ? null : new Error('Only JPG, PNG, WEBP or PDF files are allowed.'));
+  }
+});
+
+app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views'));
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'same-site' },
+  contentSecurityPolicy: false
+}));
+app.use(express.urlencoded({ extended: true, limit: '2mb' }));
+app.use(express.json({ limit: '2mb' }));
+app.use(cookieParser(process.env.SESSION_SECRET || 'CHANGE_ME'));
+app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1h' }));
+
+function env(name, fallback='') { return process.env[name] || fallback; }
+
+function deriveKey(secret) {
+  return crypto.scryptSync(String(secret || 'fallback'), 'juloos-aadhaar-v1', 32);
+}
+function encryptText(value) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', deriveKey(process.env.DATA_ENCRYPTION_KEY || process.env.SESSION_SECRET || 'fallback'), iv);
+  const ciphertext = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+  return { ciphertext, iv, tag: cipher.getAuthTag() };
+}
+function decryptText(ciphertext, iv, tag) {
+  const decipher = crypto.createDecipheriv('aes-256-gcm', deriveKey(process.env.DATA_ENCRYPTION_KEY || process.env.SESSION_SECRET || 'fallback'), iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+}
+function normalizeAadhaar(v) {
+  return String(v || '').replace(/\D/g, '');
+}
+function maskAadhaar(v) {
+  const n = normalizeAadhaar(v);
+  return n.length === 12 ? `XXXX-XXXX-${n.slice(-4)}` : 'XXXX-XXXX-XXXX';
+}
+function normalizeName(v) {
+  return String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+function nameScore(a,b) {
+  const x=normalizeName(a), y=normalizeName(b);
+  if (!x || !y) return 0;
+  if (x===y) return 100;
+  const big=x.length>=y.length?x:y, small=x.length>=y.length?y:x;
+  if (big.includes(small)) return Math.round((small.length/big.length)*100);
+  const dp = Array.from({length:y.length+1}, (_,i)=>i);
+  for(let i=1;i<=x.length;i++){
+    let prev=dp[0]; dp[0]=i;
+    for(let j=1;j<=y.length;j++){
+      const temp=dp[j];
+      dp[j]=Math.min(dp[j]+1, dp[j-1]+1, prev+(x[i-1]===y[j-1]?0:1));
+      prev=temp;
+    }
+  }
+  const dist=dp[y.length];
+  return Math.max(0, Math.round((1-dist/Math.max(x.length,y.length))*100));
+}
+function makeToken(payload) {
+  const raw = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig = crypto.createHmac('sha256', process.env.SESSION_SECRET || 'CHANGE_ME').update(raw).digest('base64url');
+  return `${raw}.${sig}`;
+}
+function readToken(token) {
+  try {
+    const [raw,sig]=String(token||'').split('.');
+    if(!raw||!sig) return null;
+    const expected=crypto.createHmac('sha256', process.env.SESSION_SECRET || 'CHANGE_ME').update(raw).digest('base64url');
+    if(!crypto.timingSafeEqual(Buffer.from(sig),Buffer.from(expected))) return null;
+    const p=JSON.parse(Buffer.from(raw,'base64url').toString('utf8'));
+    if(!p.exp || p.exp < Date.now()) return null;
+    return p;
+  } catch { return null; }
+}
+function setAdminCookie(res,email) {
+  const token=makeToken({email, role:'SUPER_ADMIN', exp:Date.now()+8*60*60*1000});
+  res.cookie('juloos_admin', token, {httpOnly:true, signed:false, sameSite:'lax', secure:process.env.NODE_ENV==='production', maxAge:8*60*60*1000});
+}
+function currentAdmin(req) { return readToken(req.cookies.juloos_admin); }
+function requireAdmin(req,res,next) {
+  const admin=currentAdmin(req);
+  if(!admin) return res.redirect('/login?next='+encodeURIComponent(req.originalUrl));
+  req.admin=admin; next();
+}
+app.use((req,res,next)=>{
+  res.locals.admin=currentAdmin(req);
+  res.locals.appName=APP_NAME;
+  res.locals.maskAadhaar=maskAadhaar;
+  next();
+});
+
+async function initDb() {
+  if(!DATABASE_URL) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS volunteers (
+      id BIGSERIAL PRIMARY KEY,
+      registration_number TEXT UNIQUE NOT NULL,
+      volunteer_id TEXT UNIQUE,
+      full_name TEXT NOT NULL,
+      mobile TEXT NOT NULL,
+      whatsapp TEXT,
+      age INTEGER,
+      gender TEXT,
+      area TEXT,
+      address TEXT,
+      emergency_name TEXT,
+      emergency_mobile TEXT,
+      volunteer_role TEXT,
+      live_photo BYTEA NOT NULL,
+      live_photo_mime TEXT NOT NULL,
+      aadhaar_document BYTEA NOT NULL,
+      aadhaar_mime TEXT NOT NULL,
+      aadhaar_ciphertext BYTEA NOT NULL,
+      aadhaar_iv BYTEA NOT NULL,
+      aadhaar_tag BYTEA NOT NULL,
+      aadhaar_last4 CHAR(4) NOT NULL,
+      ocr_aadhaar_last4 CHAR(4),
+      ocr_name TEXT,
+      ocr_confidence NUMERIC,
+      name_match_score INTEGER,
+      aadhaar_match_status TEXT NOT NULL,
+      approval_status TEXT NOT NULL DEFAULT 'SUBMITTED',
+      batch_id BIGINT,
+      id_card_status TEXT NOT NULL DEFAULT 'PENDING',
+      consent_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS batches (
+      id BIGSERIAL PRIMARY KEY,
+      batch_code TEXT UNIQUE NOT NULL,
+      batch_name TEXT NOT NULL,
+      leader_name TEXT,
+      leader_mobile TEXT,
+      capacity INTEGER NOT NULL DEFAULT 100,
+      route_area TEXT,
+      meeting_point TEXT,
+      reporting_time TEXT,
+      status TEXT NOT NULL DEFAULT 'OPEN',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id BIGSERIAL PRIMARY KEY,
+      action TEXT NOT NULL,
+      volunteer_id BIGINT,
+      admin_email TEXT,
+      details TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS volunteers_mobile_idx ON volunteers(mobile);
+    CREATE INDEX IF NOT EXISTS volunteers_status_idx ON volunteers(approval_status);
+    CREATE INDEX IF NOT EXISTS volunteers_batch_idx ON volunteers(batch_id);
+  `);
+}
+const dbReady = initDb().catch(e=>console.error('Database initialization failed:',e));
+
+async function nextRegistrationNumber(client) {
+  const r=await client.query(`SELECT COALESCE(MAX(id),0)+1 AS n FROM volunteers`);
+  return `JUL-${String(r.rows[0].n).padStart(6,'0')}`;
+}
+async function nextVolunteerId(client) {
+  const r=await client.query(`SELECT COALESCE(MAX(id),0)+1 AS n FROM volunteers`);
+  return `SDI-JUL-26-${String(r.rows[0].n).padStart(6,'0')}`;
+}
+
+async function extractAadhaarFromFile(file) {
+  if (!file) throw new Error('Aadhaar document is required.');
+  if (file.mimetype === 'application/pdf') {
+    const data = await pdfParse(file.buffer);
+    const text = data.text || '';
+    const digits=text.replace(/\D/g,'');
+    const matches=[];
+    for(let i=0;i<=digits.length-12;i++) {
+      const candidate=digits.slice(i,i+12);
+      if(/^[2-9]\d{11}$/.test(candidate)) matches.push(candidate);
+    }
+    return { number: matches[0] || null, name: null, confidence: matches[0]?85:0, method:'PDF_TEXT' };
+  }
+  const preprocessed = await sharp(file.buffer)
+    .rotate()
+    .resize({ width: 2200, withoutEnlargement: false })
+    .grayscale()
+    .normalize()
+    .sharpen()
+    .png()
+    .toBuffer();
+  const worker = await createWorker('eng');
+  try {
+    const result = await worker.recognize(preprocessed);
+    const text = result.data.text || '';
+    const digits=text.replace(/\D/g,'');
+    const candidates=[];
+    for(let i=0;i<=digits.length-12;i++) {
+      const candidate=digits.slice(i,i+12);
+      if(/^[2-9]\d{11}$/.test(candidate)) candidates.push(candidate);
+    }
+    const unique=[...new Set(candidates)];
+    // Also catch OCR spacing such as 1234 5678 9012.
+    const spaced=(text.match(/(?:\d[\s-]*){12,}/g)||[]).map(s=>s.replace(/\D/g,'')).filter(s=>/^[2-9]\d{11}$/.test(s));
+    const all=[...new Set([...unique,...spaced])];
+    const confidence=Number(result.data.confidence || 0);
+    const nameLines=text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+    const possibleName=nameLines.find(s=>/[A-Za-z]{3,}/.test(s) && !/aadhaar|unique|government|india|dob|year|male|female|gender|vid|enrol/i.test(s));
+    return { number:all[0]||null, name:possibleName||null, confidence, method:'IMAGE_OCR', rawText:text.slice(0,5000) };
+  } finally {
+    await worker.terminate();
+  }
+}
+
+app.get('/health', async (req,res)=>{
+  try { await dbReady; await pool.query('SELECT 1'); res.json({ok:true, service:APP_NAME}); }
+  catch(e){ res.status(503).json({ok:false,error:'database_unavailable'}); }
+});
+
+app.get('/',(req,res)=>res.render('home',{title:'Home'}));
+
+app.get('/register',(req,res)=>res.render('register',{title:'Volunteer Registration',error:null}));
+
+app.post('/register',
+  upload.fields([{name:'aadhaar_document',maxCount:1},{name:'live_photo',maxCount:1}]),
+  async (req,res)=>{
+  try {
+    await dbReady;
+    const f=req.body;
+    const aadhaar=normalizeAadhaar(f.aadhaar);
+    if(!/^[2-9]\d{11}$/.test(aadhaar)) throw new Error('Enter a valid 12-digit Aadhaar number.');
+    const aadhaarFile=req.files?.aadhaar_document?.[0];
+    const photo=req.files?.live_photo?.[0];
+    if(!aadhaarFile) throw new Error('Please upload the Aadhaar document.');
+    if(!photo) throw new Error('Please capture your live photo using the camera.');
+    if(!photo.mimetype.startsWith('image/')) throw new Error('Live photo must be an image.');
+    if(f.live_capture_confirm!=='1') throw new Error('Please capture the photo using the live camera.');
+    if(f.consent!=='1') throw new Error('You must accept the consent before submitting.');
+
+    // OCR is deliberately strict: no registration is created unless the uploaded document
+    // contains a readable 12-digit number matching the entered number.
+    const ocr=await extractAadhaarFromFile(aadhaarFile);
+    if(!ocr.number) throw new Error('We could not read a complete Aadhaar number from this document. Please upload a clear, uncropped Aadhaar image/PDF.');
+    if(ocr.number!==aadhaar) throw new Error(`Aadhaar number mismatch. The uploaded document does not match the number you entered.`);
+    const score=nameScore(f.full_name,ocr.name||f.full_name);
+    const client=await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('LOCK TABLE volunteers IN SHARE ROW EXCLUSIVE MODE');
+      const dup=await client.query(`SELECT registration_number FROM volunteers WHERE aadhaar_last4=$1 AND aadhaar_ciphertext IS NOT NULL`,[aadhaar.slice(-4)]);
+      // Last-four is only a prefilter; decrypt each candidate before declaring duplicate.
+      for(const row of dup.rows){
+        const vr=await client.query(`SELECT aadhaar_ciphertext,aadhaar_iv,aadhaar_tag FROM volunteers WHERE registration_number=$1`,[row.registration_number]);
+        if(vr.rows[0] && decryptText(vr.rows[0].aadhaar_ciphertext,vr.rows[0].aadhaar_iv,vr.rows[0].aadhaar_tag)===aadhaar) {
+          throw new Error('This Aadhaar number has already been registered.');
+        }
+      }
+      const mobileDup=await client.query(`SELECT registration_number FROM volunteers WHERE mobile=$1 LIMIT 1`,[String(f.mobile||'').trim()]);
+      if(mobileDup.rowCount) throw new Error('This mobile number has already been registered.');
+      const reg=await nextRegistrationNumber(client);
+      const vid=await nextVolunteerId(client);
+      const enc=encryptText(aadhaar);
+      const result=await client.query(`
+        INSERT INTO volunteers (
+          registration_number, volunteer_id, full_name, mobile, whatsapp, age, gender, area, address,
+          emergency_name, emergency_mobile, volunteer_role, live_photo, live_photo_mime,
+          aadhaar_document, aadhaar_mime, aadhaar_ciphertext, aadhaar_iv, aadhaar_tag, aadhaar_last4,
+          ocr_aadhaar_last4, ocr_name, ocr_confidence, name_match_score, aadhaar_match_status,
+          approval_status, consent_at
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,'MATCHED','SUBMITTED',NOW())
+        RETURNING id,registration_number,volunteer_id
+      `,[
+        reg,vid,String(f.full_name||'').trim(),String(f.mobile||'').trim(),String(f.whatsapp||'').trim()||String(f.mobile||'').trim(),
+        Number(f.age)||null,f.gender||null,f.area||null,f.address||null,f.emergency_name||null,f.emergency_mobile||null,f.volunteer_role||null,
+        photo.buffer,photo.mimetype,aadhaarFile.buffer,aadhaarFile.mimetype,enc.ciphertext,enc.iv,enc.tag,aadhaar.slice(-4),
+        ocr.number.slice(-4),ocr.name,ocr.confidence,score
+      ]);
+      await client.query('COMMIT');
+      res.render('submitted',{title:'Registration Submitted',registration:result.rows[0]});
+    } catch(e) {
+      await client.query('ROLLBACK'); throw e;
+    } finally { client.release(); }
+  } catch(e) {
+    console.error('Registration error:',e);
+    res.status(400).render('register',{title:'Volunteer Registration',error:e.message||'Registration failed.'});
+  }
+});
+
+app.get('/status',(req,res)=>res.render('status',{title:'Check Registration',result:null,error:null}));
+app.post('/status',async(req,res)=>{
+  try{
+    await dbReady;
+    const q=String(req.body.registration||'').trim();
+    const r=await pool.query(`SELECT registration_number,volunteer_id,full_name,approval_status,batch_id,id_card_status,created_at FROM volunteers WHERE registration_number=$1 OR volunteer_id=$1 LIMIT 1`,[q]);
+    if(!r.rowCount) return res.render('status',{title:'Check Registration',result:null,error:'Registration not found.'});
+    let row=r.rows[0];
+    let batch=null;
+    if(row.batch_id){const b=await pool.query('SELECT batch_code,batch_name,route_area,reporting_time FROM batches WHERE id=$1',[row.batch_id]);batch=b.rows[0]||null;}
+    res.render('status',{title:'Check Registration',result:{...row,batch},error:null});
+  }catch(e){res.render('status',{title:'Check Registration',result:null,error:'Unable to check status right now.'});}
+});
+
+app.get('/login',(req,res)=>res.render('login',{title:'Admin Login',error:null}));
+app.post('/login',(req,res)=>{
+  const email=String(req.body.email||'').trim().toLowerCase();
+  const password=String(req.body.password||'');
+  const goodEmail=env('ADMIN_EMAIL').trim().toLowerCase();
+  const goodPass=env('ADMIN_PASSWORD');
+  if(!goodEmail||!goodPass||email!==goodEmail||password!==goodPass) return res.status(401).render('login',{title:'Admin Login',error:'Invalid administrator credentials.'});
+  setAdminCookie(res,email);
+  res.redirect('/admin');
+});
+app.post('/logout',(req,res)=>{res.clearCookie('juloos_admin');res.redirect('/');});
+
+app.get('/admin',requireAdmin,async(req,res)=>{
+  try{
+    await dbReady;
+    const counts=(await pool.query(`
+      SELECT COUNT(*)::int total,
+      COUNT(*) FILTER(WHERE approval_status='SUBMITTED')::int submitted,
+      COUNT(*) FILTER(WHERE approval_status='APPROVED')::int approved,
+      COUNT(*) FILTER(WHERE approval_status='REJECTED')::int rejected,
+      COUNT(*) FILTER(WHERE aadhaar_match_status='MATCHED')::int matched
+      FROM volunteers`)).rows[0];
+    const pending=(await pool.query(`
+      SELECT id,registration_number,volunteer_id,full_name,mobile,RIGHT('XXXX-XXXX-'||aadhaar_last4,14) masked_aadhaar,
+      approval_status,volunteer_role,created_at,batch_id
+      FROM volunteers ORDER BY id DESC LIMIT 50`)).rows;
+    const batches=(await pool.query(`SELECT b.*,COUNT(v.id)::int volunteer_count FROM batches b LEFT JOIN volunteers v ON v.batch_id=b.id GROUP BY b.id ORDER BY b.id DESC`)).rows;
+    res.render('dashboard',{title:'Admin Dashboard',counts,pending,batches});
+  }catch(e){console.error(e);res.status(500).render('error',{title:'Database Error',message:'Database is not ready. Check DATABASE_URL and Render logs.'});}
+});
+
+app.get('/admin/volunteers',requireAdmin,async(req,res)=>{
+  try{
+    await dbReady;
+    const search=String(req.query.search||'').trim();
+    const status=String(req.query.status||'').trim();
+    const values=[]; const where=[];
+    if(search){values.push(`%${search}%`);where.push(`(full_name ILIKE $${values.length} OR mobile ILIKE $${values.length} OR registration_number ILIKE $${values.length} OR volunteer_id ILIKE $${values.length})`);}
+    if(status){values.push(status);where.push(`approval_status=$${values.length}`);}
+    const sql=`SELECT id,registration_number,volunteer_id,full_name,mobile,RIGHT('XXXX-XXXX-'||aadhaar_last4,14) masked_aadhaar,approval_status,volunteer_role,batch_id,created_at,id_card_status FROM volunteers ${where.length?'WHERE '+where.join(' AND '):''} ORDER BY id DESC LIMIT 500`;
+    const rows=(await pool.query(sql,values)).rows;
+    const batches=(await pool.query('SELECT * FROM batches ORDER BY id')).rows;
+    res.render('volunteers',{title:'Volunteer Database',rows,batches,search,status});
+  }catch(e){res.status(500).render('error',{title:'Database Error',message:'Unable to load volunteers.'});}
+});
+
+app.get('/admin/volunteer/:id',requireAdmin,async(req,res)=>{
+  try{
+    await dbReady;
+    const r=await pool.query(`SELECT id,registration_number,volunteer_id,full_name,mobile,whatsapp,age,gender,area,address,emergency_name,emergency_mobile,volunteer_role,RIGHT('XXXX-XXXX-'||aadhaar_last4,14) masked_aadhaar,ocr_aadhaar_last4,ocr_name,ocr_confidence,name_match_score,aadhaar_match_status,approval_status,batch_id,id_card_status,created_at FROM volunteers WHERE id=$1`,[req.params.id]);
+    if(!r.rowCount) return res.status(404).render('error',{title:'Not Found',message:'Volunteer not found.'});
+    const v=r.rows[0];
+    const batches=(await pool.query('SELECT * FROM batches ORDER BY id')).rows;
+    res.render('volunteer',{title:v.full_name,volunteer:v,batches});
+  }catch(e){res.status(500).render('error',{title:'Database Error',message:'Unable to load volunteer.'});}
+});
+
+app.get('/admin/volunteer/:id/photo',requireAdmin,async(req,res)=>{
+  const r=await pool.query('SELECT live_photo,live_photo_mime FROM volunteers WHERE id=$1',[req.params.id]);
+  if(!r.rowCount) return res.sendStatus(404); res.set('Cache-Control','private,no-store').type(r.rows[0].live_photo_mime).send(r.rows[0].live_photo);
+});
+app.get('/admin/volunteer/:id/aadhaar',requireAdmin,async(req,res)=>{
+  const r=await pool.query('SELECT aadhaar_document,aadhaar_mime,aadhaar_ciphertext,aadhaar_iv,aadhaar_tag,registration_number FROM volunteers WHERE id=$1',[req.params.id]);
+  if(!r.rowCount) return res.sendStatus(404);
+  await pool.query('INSERT INTO audit_logs(action,volunteer_id,admin_email,details) VALUES($1,$2,$3,$4)',['VIEW_AADHAAR_DOCUMENT',req.params.id,req.admin.email,'Authorized administrator viewed Aadhaar document']);
+  res.set('Cache-Control','private,no-store').type(r.rows[0].aadhaar_mime).send(r.rows[0].aadhaar_document);
+});
+app.get('/admin/volunteer/:id/reveal-aadhaar',requireAdmin,async(req,res)=>{
+  const r=await pool.query('SELECT aadhaar_ciphertext,aadhaar_iv,aadhaar_tag FROM volunteers WHERE id=$1',[req.params.id]);
+  if(!r.rowCount) return res.sendStatus(404);
+  const aadhaar=decryptText(r.rows[0].aadhaar_ciphertext,r.rows[0].aadhaar_iv,r.rows[0].aadhaar_tag);
+  await pool.query('INSERT INTO audit_logs(action,volunteer_id,admin_email,details) VALUES($1,$2,$3,$4)',['REVEAL_AADHAAR',req.params.id,req.admin.email,'Authorized administrator revealed full Aadhaar number']);
+  res.json({aadhaar});
+});
+
+app.post('/admin/volunteer/:id/decision',requireAdmin,async(req,res)=>{
+  const decision=String(req.body.decision||'');
+  if(!['APPROVED','REJECTED'].includes(decision)) return res.status(400).send('Invalid decision');
+  const reason=String(req.body.reason||'').trim();
+  if(decision==='REJECTED'&&!reason) return res.status(400).send('A rejection reason is required.');
+  const r=await pool.query(`UPDATE volunteers SET approval_status=$1,updated_at=NOW() WHERE id=$2 RETURNING volunteer_id`,[decision,req.params.id]);
+  if(!r.rowCount) return res.sendStatus(404);
+  await pool.query('INSERT INTO audit_logs(action,volunteer_id,admin_email,details) VALUES($1,$2,$3,$4)',['STATUS_CHANGE',req.params.id,req.admin.email,`${decision}${reason?': '+reason:''}`]);
+  res.redirect('/admin/volunteer/'+req.params.id);
+});
+
+app.post('/admin/batches',requireAdmin,async(req,res)=>{
+  const f=req.body;
+  const code=String(f.batch_code||'').trim().toUpperCase();
+  if(!code||!f.batch_name) return res.status(400).send('Batch code and name required.');
+  await pool.query(`INSERT INTO batches(batch_code,batch_name,leader_name,leader_mobile,capacity,route_area,meeting_point,reporting_time) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[code,f.batch_name,f.leader_name||null,f.leader_mobile||null,Number(f.capacity)||100,f.route_area||null,f.meeting_point||null,f.reporting_time||null]);
+  res.redirect('/admin');
+});
+app.post('/admin/volunteer/:id/batch',requireAdmin,async(req,res)=>{
+  const batchId=Number(req.body.batch_id)||null;
+  if(batchId){
+    const ok=await pool.query(`SELECT v.id,b.capacity,COUNT(v2.id)::int cnt FROM volunteers v JOIN batches b ON b.id=$1 LEFT JOIN volunteers v2 ON v2.batch_id=b.id WHERE v.id=$2 GROUP BY v.id,b.id`,[batchId,req.params.id]);
+    if(!ok.rowCount) return res.status(400).send('Invalid batch.');
+    const x=ok.rows[0]; if(x.cnt>=x.capacity) return res.status(400).send('Batch capacity is full.');
+    const cur=await pool.query('SELECT approval_status FROM volunteers WHERE id=$1',[req.params.id]);
+    if(cur.rows[0]?.approval_status!=='APPROVED') return res.status(400).send('Only approved volunteers can be assigned to a batch.');
+  }
+  await pool.query('UPDATE volunteers SET batch_id=$1,updated_at=NOW() WHERE id=$2',[batchId,req.params.id]);
+  res.redirect('/admin/volunteer/'+req.params.id);
+});
+
+app.get('/admin/volunteer/:id/id-card',requireAdmin,async(req,res)=>{
+  const r=await pool.query(`SELECT v.*,b.batch_code,b.batch_name,b.route_area,b.reporting_time FROM volunteers v LEFT JOIN batches b ON b.id=v.batch_id WHERE v.id=$1`,[req.params.id]);
+  if(!r.rowCount) return res.sendStatus(404);
+  const v=r.rows[0];
+  if(v.approval_status!=='APPROVED') return res.status(400).send('Only approved volunteers can receive an ID card.');
+  await pool.query(`UPDATE volunteers SET id_card_status='GENERATED',updated_at=NOW() WHERE id=$1`,[req.params.id]);
+  const QRCode = require('qrcode');
+  const verifyUrl = `${process.env.BASE_URL || `http://localhost:${PORT}`}/verify/${v.volunteer_id}`;
+  const qrDataUrl = await QRCode.toDataURL(verifyUrl, { width: 220, margin: 1 });
+  res.render('idcard',{title:'Volunteer ID Card',v,qrDataUrl});
+});
+
+app.get('/verify/:volunteerId',async(req,res)=>{
+  const r=await pool.query(`SELECT v.volunteer_id,v.full_name,v.volunteer_role,v.approval_status,v.id_card_status,b.batch_code,b.batch_name,b.route_area FROM volunteers v LEFT JOIN batches b ON b.id=v.batch_id WHERE v.volunteer_id=$1`,[req.params.volunteerId]);
+  if(!r.rowCount||r.rows[0].approval_status!=='APPROVED') return res.render('verify',{title:'Volunteer Verification',valid:false,v:null});
+  res.render('verify',{title:'Volunteer Verification',valid:true,v:r.rows[0]});
+});
+
+app.use((err,req,res,next)=>{
+  console.error(err);
+  if(err instanceof multer.MulterError) return res.status(400).render('error',{title:'Upload Error',message:err.code==='LIMIT_FILE_SIZE'?`File is too large. Maximum is ${MAX_UPLOAD_MB} MB.`:err.message});
+  res.status(500).render('error',{title:'Server Error',message:'Something went wrong. Please try again.'});
+});
+
+app.listen(PORT,()=>console.log(`${APP_NAME} listening on ${PORT}`));
