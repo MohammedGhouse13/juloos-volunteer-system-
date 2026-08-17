@@ -29,13 +29,6 @@
   </div>
 
   <div class="card">
-    <h2>Aadhaar Document</h2>
-    <p>The uploaded Aadhaar document is stored securely for authorized administrator review.</p>
-    <p><b>Document:</b> <%= volunteer.aadhaar_mime||'Uploaded' %></p>
-    <a class="btn outline" target="_blank" rel="noopener" href="/admin/volunteer/<%= volunteer.id %>/aadhaar">View Uploaded Aadhaar</a>
-
-    <hr>
-
     <h2>Application</h2>
     <p><b>Status:</b> <span class="badge <%= volunteer.approval_status.toLowerCase() %>"><%= volunteer.approval_status %></span></p>
 
@@ -56,10 +49,10 @@
         <% if(volunteer.rejection_reason){ %>
           <p>Reason: <%= volunteer.rejection_reason %></p>
         <% } %>
-        <p>The complete registration and uploaded documents remain stored. Nothing has been deleted.</p>
+        <p>The complete registration remains stored. Nothing has been deleted.</p>
       </div>
     <% } %>
-  </div>
+
 </div>
 
 <div class="card">

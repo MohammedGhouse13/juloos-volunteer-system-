@@ -27,7 +27,7 @@ The included `render.yaml` can create a web service and PostgreSQL database toge
 
 ## Features
 - Live browser camera capture for volunteer photo; gallery selection is not accepted for the live-photo field.
-- Aadhaar document upload and secure administrator-only document review. No OCR or automatic Aadhaar-document matching is performed.
+- Aadhaar number capture and secure administrator-only review. No Aadhaar document upload, OCR, or automatic matching is performed.
 - Duplicate Aadhaar and mobile checks.
 - Admin login, dashboard, volunteer database, search, approval/rejection, batch assignment, audit logging and ID cards.
 - Full Aadhaar is encrypted at rest and masked by default. Authorized reveal/document viewing is logged.
@@ -36,10 +36,10 @@ The included `render.yaml` can create a web service and PostgreSQL database toge
 ## Important
 The camera capture is not biometric anti-spoofing. It only ensures the volunteer captured a photo through the browser camera rather than selecting a gallery file.
 
-Do not commit `.env` files or real Aadhaar documents to GitHub.
+Do not commit `.env` files or real Aadhaar numbers to GitHub.
 
 
 ## Approval workflow
 Registrations are NEVER automatically approved. Every registration starts as SUBMITTED and must be reviewed by an administrator. The administrator can APPROVE or REJECT it. Rejected records and their uploaded documents are retained; nothing is deleted by the rejection action. An ID card can only be generated after approval, and the volunteer can open it from the public status page using their Volunteer ID.
 
-The Aadhaar upload is stored for authorized administrator review, but this build does not perform OCR or automatic Aadhaar/document matching.
+No Aadhaar document is uploaded or stored by new registrations. The application stores the Aadhaar number securely for authorized administrator review and does not perform OCR or automatic matching.
