@@ -5,9 +5,6 @@ const cookieParser = require('cookie-parser');
 const crypto = require('crypto');
 const { Pool } = require('pg');
 const multer = require('multer');
-const sharp = require('sharp');
-const pdfParse = require('pdf-parse');
-const { createWorker } = require('tesseract.js');
 const path = require('path');
 
 const app = express();
@@ -70,27 +67,6 @@ function normalizeAadhaar(v) {
 function maskAadhaar(v) {
   const n = normalizeAadhaar(v);
   return n.length === 12 ? `XXXX-XXXX-${n.slice(-4)}` : 'XXXX-XXXX-XXXX';
-}
-function normalizeName(v) {
-  return String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-}
-function nameScore(a,b) {
-  const x=normalizeName(a), y=normalizeName(b);
-  if (!x || !y) return 0;
-  if (x===y) return 100;
-  const big=x.length>=y.length?x:y, small=x.length>=y.length?y:x;
-  if (big.includes(small)) return Math.round((small.length/big.length)*100);
-  const dp = Array.from({length:y.length+1}, (_,i)=>i);
-  for(let i=1;i<=x.length;i++){
-    let prev=dp[0]; dp[0]=i;
-    for(let j=1;j<=y.length;j++){
-      const temp=dp[j];
-      dp[j]=Math.min(dp[j]+1, dp[j-1]+1, prev+(x[i-1]===y[j-1]?0:1));
-      prev=temp;
-    }
-  }
-  const dist=dp[y.length];
-  return Math.max(0, Math.round((1-dist/Math.max(x.length,y.length))*100));
 }
 function makeToken(payload) {
   const raw = Buffer.from(JSON.stringify(payload)).toString('base64url');
@@ -156,12 +132,8 @@ async function initDb() {
         aadhaar_iv BYTEA,
         aadhaar_tag BYTEA,
         aadhaar_last4 CHAR(4),
-        ocr_aadhaar_last4 CHAR(4),
-        ocr_name TEXT,
-        ocr_confidence NUMERIC,
-        name_match_score INTEGER,
-        aadhaar_match_status TEXT,
         approval_status TEXT DEFAULT 'SUBMITTED',
+        rejection_reason TEXT,
         batch_id BIGINT,
         id_card_status TEXT DEFAULT 'PENDING',
         consent_at TIMESTAMPTZ,
@@ -218,12 +190,8 @@ async function initDb() {
       aadhaar_iv: 'BYTEA',
       aadhaar_tag: 'BYTEA',
       aadhaar_last4: 'CHAR(4)',
-      ocr_aadhaar_last4: 'CHAR(4)',
-      ocr_name: 'TEXT',
-      ocr_confidence: 'NUMERIC',
-      name_match_score: 'INTEGER',
-      aadhaar_match_status: 'TEXT',
       approval_status: "TEXT DEFAULT 'SUBMITTED'",
+      rejection_reason: 'TEXT',
       batch_id: 'BIGINT',
       id_card_status: "TEXT DEFAULT 'PENDING'",
       consent_at: 'TIMESTAMPTZ',
@@ -297,50 +265,6 @@ async function nextVolunteerId(client) {
   return `SDI-JUL-26-${String(r.rows[0].n).padStart(6,'0')}`;
 }
 
-async function extractAadhaarFromFile(file) {
-  if (!file) throw new Error('Aadhaar document is required.');
-  if (file.mimetype === 'application/pdf') {
-    const data = await pdfParse(file.buffer);
-    const text = data.text || '';
-    const digits=text.replace(/\D/g,'');
-    const matches=[];
-    for(let i=0;i<=digits.length-12;i++) {
-      const candidate=digits.slice(i,i+12);
-      if(/^[2-9]\d{11}$/.test(candidate)) matches.push(candidate);
-    }
-    return { number: matches[0] || null, name: null, confidence: matches[0]?85:0, method:'PDF_TEXT' };
-  }
-  const preprocessed = await sharp(file.buffer)
-    .rotate()
-    .resize({ width: 2200, withoutEnlargement: false })
-    .grayscale()
-    .normalize()
-    .sharpen()
-    .png()
-    .toBuffer();
-  const worker = await createWorker('eng');
-  try {
-    const result = await worker.recognize(preprocessed);
-    const text = result.data.text || '';
-    const digits=text.replace(/\D/g,'');
-    const candidates=[];
-    for(let i=0;i<=digits.length-12;i++) {
-      const candidate=digits.slice(i,i+12);
-      if(/^[2-9]\d{11}$/.test(candidate)) candidates.push(candidate);
-    }
-    const unique=[...new Set(candidates)];
-    // Also catch OCR spacing such as 1234 5678 9012.
-    const spaced=(text.match(/(?:\d[\s-]*){12,}/g)||[]).map(s=>s.replace(/\D/g,'')).filter(s=>/^[2-9]\d{11}$/.test(s));
-    const all=[...new Set([...unique,...spaced])];
-    const confidence=Number(result.data.confidence || 0);
-    const nameLines=text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
-    const possibleName=nameLines.find(s=>/[A-Za-z]{3,}/.test(s) && !/aadhaar|unique|government|india|dob|year|male|female|gender|vid|enrol/i.test(s));
-    return { number:all[0]||null, name:possibleName||null, confidence, method:'IMAGE_OCR', rawText:text.slice(0,5000) };
-  } finally {
-    await worker.terminate();
-  }
-}
-
 app.get('/health', async (req,res)=>{
   try { await dbReady; await pool.query('SELECT 1'); res.json({ok:true, service:APP_NAME}); }
   catch(e){ res.status(503).json({ok:false,error:'database_unavailable'}); }
@@ -357,61 +281,90 @@ app.post('/register',
     await dbReady;
     const f=req.body;
     const aadhaar=normalizeAadhaar(f.aadhaar);
-    if(!/^[2-9]\d{11}$/.test(aadhaar)) throw new Error('Enter a valid 12-digit Aadhaar number.');
+
+    // Aadhaar is validated only for format. The uploaded document is stored
+    // securely for authorized admin review. No automatic document matching is performed.
+    if(!/^[2-9]\d{11}$/.test(aadhaar)) {
+      throw new Error('Enter a valid 12-digit Aadhaar number.');
+    }
+
     const aadhaarFile=req.files?.aadhaar_document?.[0];
     const photo=req.files?.live_photo?.[0];
+
     if(!aadhaarFile) throw new Error('Please upload the Aadhaar document.');
     if(!photo) throw new Error('Please capture your live photo using the camera.');
     if(!photo.mimetype.startsWith('image/')) throw new Error('Live photo must be an image.');
     if(f.live_capture_confirm!=='1') throw new Error('Please capture the photo using the live camera.');
     if(f.consent!=='1') throw new Error('You must accept the consent before submitting.');
 
-    // OCR is deliberately strict: no registration is created unless the uploaded document
-    // contains a readable 12-digit number matching the entered number.
-    const ocr=await extractAadhaarFromFile(aadhaarFile);
-    if(!ocr.number) throw new Error('We could not read a complete Aadhaar number from this document. Please upload a clear, uncropped Aadhaar image/PDF.');
-    if(ocr.number!==aadhaar) throw new Error(`Aadhaar number mismatch. The uploaded document does not match the number you entered.`);
-    const score=nameScore(f.full_name,ocr.name||f.full_name);
     const client=await pool.connect();
     try {
       await client.query('BEGIN');
       await client.query('LOCK TABLE volunteers IN SHARE ROW EXCLUSIVE MODE');
-      const dup=await client.query(`SELECT registration_number FROM volunteers WHERE aadhaar_last4=$1 AND aadhaar_ciphertext IS NOT NULL`,[aadhaar.slice(-4)]);
-      // Last-four is only a prefilter; decrypt each candidate before declaring duplicate.
+
+      // Prevent duplicate Aadhaar registrations using the encrypted value.
+      const dup=await client.query(
+        `SELECT registration_number,aadhaar_ciphertext,aadhaar_iv,aadhaar_tag
+         FROM volunteers
+         WHERE aadhaar_last4=$1 AND aadhaar_ciphertext IS NOT NULL`,
+        [aadhaar.slice(-4)]
+      );
+
       for(const row of dup.rows){
-        const vr=await client.query(`SELECT aadhaar_ciphertext,aadhaar_iv,aadhaar_tag FROM volunteers WHERE registration_number=$1`,[row.registration_number]);
-        if(vr.rows[0] && decryptText(vr.rows[0].aadhaar_ciphertext,vr.rows[0].aadhaar_iv,vr.rows[0].aadhaar_tag)===aadhaar) {
-          throw new Error('This Aadhaar number has already been registered.');
+        try {
+          if(decryptText(row.aadhaar_ciphertext,row.aadhaar_iv,row.aadhaar_tag)===aadhaar) {
+            throw new Error('This Aadhaar number has already been registered.');
+          }
+        } catch(e) {
+          if(e.message==='This Aadhaar number has already been registered.') throw e;
         }
       }
-      const mobileDup=await client.query(`SELECT registration_number FROM volunteers WHERE mobile=$1 LIMIT 1`,[String(f.mobile||'').trim()]);
+
+      const mobile=String(f.mobile||'').trim();
+      const mobileDup=await client.query(
+        `SELECT registration_number FROM volunteers WHERE mobile=$1 LIMIT 1`,
+        [mobile]
+      );
       if(mobileDup.rowCount) throw new Error('This mobile number has already been registered.');
+
       const reg=await nextRegistrationNumber(client);
       const vid=await nextVolunteerId(client);
       const enc=encryptText(aadhaar);
+
       const result=await client.query(`
         INSERT INTO volunteers (
           registration_number, volunteer_id, full_name, mobile, whatsapp, age, gender, area, address,
           emergency_name, emergency_mobile, volunteer_role, live_photo, live_photo_mime,
           aadhaar_document, aadhaar_mime, aadhaar_ciphertext, aadhaar_iv, aadhaar_tag, aadhaar_last4,
-          ocr_aadhaar_last4, ocr_name, ocr_confidence, name_match_score, aadhaar_match_status,
           approval_status, consent_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,'MATCHED','SUBMITTED',NOW())
+        ) VALUES (
+          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,'SUBMITTED',NOW()
+        )
         RETURNING id,registration_number,volunteer_id
       `,[
-        reg,vid,String(f.full_name||'').trim(),String(f.mobile||'').trim(),String(f.whatsapp||'').trim()||String(f.mobile||'').trim(),
-        Number(f.age)||null,f.gender||null,f.area||null,f.address||null,f.emergency_name||null,f.emergency_mobile||null,f.volunteer_role||null,
-        photo.buffer,photo.mimetype,aadhaarFile.buffer,aadhaarFile.mimetype,enc.ciphertext,enc.iv,enc.tag,aadhaar.slice(-4),
-        ocr.number.slice(-4),ocr.name,ocr.confidence,score
+        reg,vid,String(f.full_name||'').trim(),mobile,
+        String(f.whatsapp||'').trim()||mobile,
+        Number(f.age)||null,f.gender||null,f.area||null,f.address||null,
+        f.emergency_name||null,f.emergency_mobile||null,f.volunteer_role||null,
+        photo.buffer,photo.mimetype,
+        aadhaarFile.buffer,aadhaarFile.mimetype,
+        enc.ciphertext,enc.iv,enc.tag,aadhaar.slice(-4)
       ]);
+
       await client.query('COMMIT');
       res.render('submitted',{title:'Registration Submitted',registration:result.rows[0]});
     } catch(e) {
-      await client.query('ROLLBACK'); throw e;
-    } finally { client.release(); }
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
   } catch(e) {
     console.error('Registration error:',e);
-    res.status(400).render('register',{title:'Volunteer Registration',error:e.message||'Registration failed.'});
+    res.status(400).render('register',{
+      title:'Volunteer Registration',
+      error:e.message||'Registration failed.'
+    });
   }
 });
 
@@ -420,7 +373,7 @@ app.post('/status',async(req,res)=>{
   try{
     await dbReady;
     const q=String(req.body.registration||'').trim();
-    const r=await pool.query(`SELECT registration_number,volunteer_id,full_name,approval_status,batch_id,id_card_status,created_at FROM volunteers WHERE registration_number=$1 OR volunteer_id=$1 LIMIT 1`,[q]);
+    const r=await pool.query(`SELECT registration_number,volunteer_id,full_name,approval_status,rejection_reason,batch_id,id_card_status,created_at FROM volunteers WHERE registration_number=$1 OR volunteer_id=$1 LIMIT 1`,[q]);
     if(!r.rowCount) return res.render('status',{title:'Check Registration',result:null,error:'Registration not found.'});
     let row=r.rows[0];
     let batch=null;
@@ -448,8 +401,7 @@ app.get('/admin',requireAdmin,async(req,res)=>{
       SELECT COUNT(*)::int total,
       COUNT(*) FILTER(WHERE approval_status='SUBMITTED')::int submitted,
       COUNT(*) FILTER(WHERE approval_status='APPROVED')::int approved,
-      COUNT(*) FILTER(WHERE approval_status='REJECTED')::int rejected,
-      COUNT(*) FILTER(WHERE aadhaar_match_status='MATCHED')::int matched
+      COUNT(*) FILTER(WHERE approval_status='REJECTED')::int rejected
       FROM volunteers`)).rows[0];
     const pending=(await pool.query(`
       SELECT id,registration_number,volunteer_id,full_name,mobile,RIGHT('XXXX-XXXX-'||aadhaar_last4,14) masked_aadhaar,
@@ -478,7 +430,7 @@ app.get('/admin/volunteers',requireAdmin,async(req,res)=>{
 app.get('/admin/volunteer/:id',requireAdmin,async(req,res)=>{
   try{
     await dbReady;
-    const r=await pool.query(`SELECT id,registration_number,volunteer_id,full_name,mobile,whatsapp,age,gender,area,address,emergency_name,emergency_mobile,volunteer_role,RIGHT('XXXX-XXXX-'||aadhaar_last4,14) masked_aadhaar,ocr_aadhaar_last4,ocr_name,ocr_confidence,name_match_score,aadhaar_match_status,approval_status,batch_id,id_card_status,created_at FROM volunteers WHERE id=$1`,[req.params.id]);
+    const r=await pool.query(`SELECT id,registration_number,volunteer_id,full_name,mobile,whatsapp,age,gender,area,address,emergency_name,emergency_mobile,volunteer_role,RIGHT('XXXX-XXXX-'||aadhaar_last4,14) masked_aadhaar,aadhaar_mime,approval_status,rejection_reason,batch_id,id_card_status,created_at FROM volunteers WHERE id=$1`,[req.params.id]);
     if(!r.rowCount) return res.status(404).render('error',{title:'Not Found',message:'Volunteer not found.'});
     const v=r.rows[0];
     const batches=(await pool.query('SELECT * FROM batches ORDER BY id')).rows;
@@ -509,7 +461,15 @@ app.post('/admin/volunteer/:id/decision',requireAdmin,async(req,res)=>{
   if(!['APPROVED','REJECTED'].includes(decision)) return res.status(400).send('Invalid decision');
   const reason=String(req.body.reason||'').trim();
   if(decision==='REJECTED'&&!reason) return res.status(400).send('A rejection reason is required.');
-  const r=await pool.query(`UPDATE volunteers SET approval_status=$1,updated_at=NOW() WHERE id=$2 RETURNING volunteer_id`,[decision,req.params.id]);
+  const r=await pool.query(
+    `UPDATE volunteers
+     SET approval_status=$1,
+         rejection_reason=$2,
+         updated_at=NOW()
+     WHERE id=$3
+     RETURNING volunteer_id`,
+    [decision, decision==='REJECTED' ? reason : null, req.params.id]
+  );
   if(!r.rowCount) return res.sendStatus(404);
   await pool.query('INSERT INTO audit_logs(action,volunteer_id,admin_email,details) VALUES($1,$2,$3,$4)',['STATUS_CHANGE',req.params.id,req.admin.email,`${decision}${reason?': '+reason:''}`]);
   res.redirect('/admin/volunteer/'+req.params.id);
@@ -545,6 +505,45 @@ app.get('/admin/volunteer/:id/id-card',requireAdmin,async(req,res)=>{
   const verifyUrl = `${process.env.BASE_URL || `http://localhost:${PORT}`}/verify/${v.volunteer_id}`;
   const qrDataUrl = await QRCode.toDataURL(verifyUrl, { width: 220, margin: 1 });
   res.render('idcard',{title:'Volunteer ID Card',v,qrDataUrl});
+});
+
+
+app.get('/volunteer/:volunteerId/id-card',async(req,res)=>{
+  try {
+    await dbReady;
+    const r=await pool.query(`
+      SELECT v.*,b.batch_code,b.batch_name,b.route_area,b.reporting_time
+      FROM volunteers v
+      LEFT JOIN batches b ON b.id=v.batch_id
+      WHERE v.volunteer_id=$1
+    `,[req.params.volunteerId]);
+
+    if(!r.rowCount) return res.status(404).render('error',{title:'Not Found',message:'Volunteer record not found.'});
+    const v=r.rows[0];
+
+    if(v.approval_status!=='APPROVED') {
+      return res.status(403).render('error',{
+        title:'ID Card Not Available',
+        message:v.approval_status==='REJECTED'
+          ? 'This registration was rejected. An ID card cannot be issued.'
+          : 'This registration is still waiting for administrator approval.'
+      });
+    }
+
+    await pool.query(
+      `UPDATE volunteers SET id_card_status='GENERATED',updated_at=NOW() WHERE id=$1`,
+      [v.id]
+    );
+
+    const QRCode = require('qrcode');
+    const verifyUrl = `${process.env.BASE_URL || `http://localhost:${PORT}`}/verify/${v.volunteer_id}`;
+    const qrDataUrl = await QRCode.toDataURL(verifyUrl,{width:220,margin:1});
+
+    res.render('idcard',{title:'Volunteer ID Card',v,qrDataUrl});
+  } catch(e) {
+    console.error('Public ID card error:',e);
+    res.status(500).render('error',{title:'ID Card Error',message:'Unable to generate the ID card right now.'});
+  }
 });
 
 app.get('/verify/:volunteerId',async(req,res)=>{

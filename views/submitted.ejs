@@ -1,1 +1,26 @@
-<%- include('partials-head',{title,appName}) %><div class="center card success"><div class="icon">✓</div><h1>Registration Submitted</h1><p>Your Aadhaar document matched the number you entered.</p><div class="idbox"><span>Registration Number</span><strong><%= registration.registration_number %></strong></div><div class="idbox"><span>Volunteer ID</span><strong><%= registration.volunteer_id %></strong></div><p>Save these numbers. An administrator must approve the registration before batch assignment and ID-card issuance.</p><a class="btn gold" href="/status">Check Status</a></div><%- include('partials-foot') %>
+<%- include('partials-head',{title,appName}) %>
+<div class="center card success">
+  <div class="icon">✓</div>
+  <h1>Registration Received</h1>
+  <p>Your volunteer registration and documents have been received successfully.</p>
+
+  <div class="idbox">
+    <span>Registration Number</span>
+    <strong><%= registration.registration_number %></strong>
+  </div>
+
+  <div class="idbox">
+    <span>Volunteer ID</span>
+    <strong><%= registration.volunteer_id %></strong>
+  </div>
+
+  <div class="notice">
+    <strong>Waiting for Administrator Approval</strong>
+    <p>Your registration is not approved automatically. An administrator will review it first.</p>
+    <p>After approval, your ID card will become available from the status page.</p>
+  </div>
+
+  <p>Save your registration number and Volunteer ID so you can check the status later.</p>
+  <a class="btn gold" href="/status">Check Status</a>
+</div>
+<%- include('partials-foot') %>

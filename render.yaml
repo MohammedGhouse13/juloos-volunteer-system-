@@ -9,8 +9,6 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: OCR_ENABLED
-        value: "true"
       - key: MAX_UPLOAD_MB
         value: "10"
       - key: ADMIN_EMAIL

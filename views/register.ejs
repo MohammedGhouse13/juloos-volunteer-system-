@@ -1,5 +1,5 @@
 <%- include('partials-head',{title,appName}) %>
-<div class="page-head"><div><span class="pill">VOLUNTEER REGISTRATION</span><h1>Register for the Juloos</h1><p>Complete every required step. Your Aadhaar number must match the uploaded document.</p></div></div>
+<div class="page-head"><div><span class="pill">VOLUNTEER REGISTRATION</span><h1>Register for the Juloos</h1><p>Complete every required step. Your Aadhaar number and uploaded document will be stored securely for authorized administrator review.</p></div></div>
 <% if (error) { %><div class="alert danger"><%= error %></div><% } %>
 <form class="card form" method="post" action="/register" enctype="multipart/form-data" onsubmit="return validateRegistration()">
 <h2>1. Personal Details</h2>
@@ -15,8 +15,8 @@
 <label>Emergency contact name<input name="emergency_name"></label>
 <label>Emergency contact mobile<input name="emergency_mobile" inputmode="numeric" pattern="[6-9][0-9]{9}" maxlength="10"></label>
 </div>
-<hr><h2>2. Aadhaar Verification</h2>
-<div class="privacy-box">Enter the 12-digit Aadhaar number and upload a clear image/PDF. The server will OCR the document and <strong>the registration will not be created unless the number read from the document matches the number entered.</strong></div>
+<hr><h2>2. Aadhaar Details</h2>
+<div class="privacy-box">Enter your 12-digit Aadhaar number and upload a clear Aadhaar image/PDF. The document is stored securely and is available only to authorized administrators for manual review. The system does <strong>not</strong> perform OCR or automatic Aadhaar-document matching.</div>
 <label>Aadhaar number*<input name="aadhaar" required inputmode="numeric" pattern="[2-9][0-9]{11}" maxlength="12" placeholder="12 digits" autocomplete="off"></label>
 <label>Aadhaar document* <input type="file" name="aadhaar_document" required accept="image/jpeg,image/png,image/webp,application/pdf"></label>
 <small>Use a clear, uncropped document. Maximum upload size: 10 MB.</small>
@@ -25,9 +25,9 @@
 <div class="camera"><video id="video" autoplay playsinline muted></video><canvas id="canvas"></canvas><img id="preview" alt="Live photo preview"><div class="actions"><button type="button" class="btn" id="startCamera">Open Camera</button><button type="button" class="btn gold" id="capture" disabled>Capture Live Photo</button><button type="button" class="btn outline" id="retake" disabled>Retake</button></div></div>
 <input type="file" id="livePhotoFile" name="live_photo" accept="image/jpeg" hidden>
 <input type="hidden" name="live_capture_confirm" id="liveCaptureConfirm" value="0">
-<div class="notice">Camera capture checks that a live camera stream was used in this browser. It is not a biometric anti-spoof/face-recognition service; do not use the system as proof of identity beyond the stated document match.</div>
+<div class="notice">Camera capture checks that a live camera stream was used in this browser. It is not a biometric anti-spoof/face-recognition service; do not use the camera feature as proof of identity.</div>
 <hr><h2>4. Consent</h2>
-<label class="check"><input type="checkbox" name="consent" value="1" required> I confirm that the information and Aadhaar document submitted by me are mine and I consent to their use for Juloos volunteer registration, identity-document comparison, coordination, batch assignment and ID-card issuance.</label>
+<label class="check"><input type="checkbox" name="consent" value="1" required> I confirm that the information and Aadhaar document submitted by me are mine and I consent to their secure use for Juloos volunteer registration, volunteer coordination, batch assignment and ID-card issuance.</label>
 <button class="btn gold large" type="submit" id="submitBtn" disabled>Submit Registration</button>
 </form>
 <script>

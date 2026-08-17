@@ -1,3 +1,66 @@
-<%- include('partials-head',{title,appName}) %><div class="narrow"><div class="card form"><span class="pill">STATUS</span><h1>Check Registration</h1><form method="post" action="/status"><label>Registration number or Volunteer ID<input name="registration" required placeholder="JUL-000001 or SDI-JUL-26-000001"></label><button class="btn gold">Check</button></form></div>
-<% if(error){ %><div class="alert danger"><%= error %></div><% } %>
-<% if(result){ %><div class="card"><h2><%= result.full_name %></h2><p><strong><%= result.registration_number %></strong> · <%= result.volunteer_id||'Pending ID' %></p><span class="badge <%= result.approval_status.toLowerCase() %>"><%= result.approval_status %></span><dl><dt>Batch</dt><dd><%= result.batch?.batch_code||'Not assigned yet' %></dd><dt>ID card</dt><dd><%= result.id_card_status %></dd><dt>Registered</dt><dd><%= new Date(result.created_at).toLocaleString() %></dd></dl></div><% } %></div><%- include('partials-foot') %>
+<%- include('partials-head',{title,appName}) %>
+<div class="narrow">
+  <div class="card form">
+    <span class="pill">STATUS</span>
+    <h1>Check Registration</h1>
+    <form method="post" action="/status">
+      <label>Registration number or Volunteer ID
+        <input name="registration" required placeholder="JUL-000001 or SDI-JUL-26-000001">
+      </label>
+      <button class="btn gold">Check Status</button>
+    </form>
+  </div>
+
+  <% if(error){ %>
+    <div class="alert danger"><%= error %></div>
+  <% } %>
+
+  <% if(result){ %>
+    <div class="card">
+      <h2><%= result.full_name %></h2>
+      <p><strong><%= result.registration_number %></strong> · <%= result.volunteer_id||'Volunteer ID pending' %></p>
+
+      <span class="badge <%= result.approval_status.toLowerCase() %>">
+        <%= result.approval_status %>
+      </span>
+
+      <% if(result.approval_status==='SUBMITTED'){ %>
+        <div class="notice">
+          Your registration has been received and is waiting for administrator approval.
+          Please check this page again later.
+        </div>
+      <% } %>
+
+      <% if(result.approval_status==='REJECTED'){ %>
+        <div class="alert danger">
+          <strong>Registration Rejected</strong>
+          <% if(result.rejection_reason){ %>
+            <p>Reason: <%= result.rejection_reason %></p>
+          <% } %>
+          <p>Your registration record has been retained. No ID card has been issued.</p>
+        </div>
+      <% } %>
+
+      <% if(result.approval_status==='APPROVED'){ %>
+        <div class="notice">
+          <strong>Registration Approved.</strong>
+          Your volunteer ID card is now available.
+        </div>
+        <a class="btn gold" target="_blank" rel="noopener"
+           href="/volunteer/<%= result.volunteer_id %>/id-card">
+          Open / Print ID Card
+        </a>
+      <% } %>
+
+      <dl>
+        <dt>Batch</dt>
+        <dd><%= result.batch?.batch_code||'Not assigned yet' %></dd>
+        <dt>ID card</dt>
+        <dd><%= result.id_card_status %></dd>
+        <dt>Registered</dt>
+        <dd><%= new Date(result.created_at).toLocaleString() %></dd>
+      </dl>
+    </div>
+  <% } %>
+</div>
+<%- include('partials-foot') %>

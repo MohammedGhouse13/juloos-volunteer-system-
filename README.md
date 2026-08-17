@@ -17,7 +17,6 @@ Environment variables:
 - `SESSION_SECRET` — long random secret
 - `DATA_ENCRYPTION_KEY` — long random secret used to encrypt Aadhaar numbers
 - `NODE_ENV=production`
-- `OCR_ENABLED=true`
 - `MAX_UPLOAD_MB=10`
 
 ### Existing database migration
@@ -28,13 +27,19 @@ The included `render.yaml` can create a web service and PostgreSQL database toge
 
 ## Features
 - Live browser camera capture for volunteer photo; gallery selection is not accepted for the live-photo field.
-- Aadhaar document upload and strict OCR number comparison against the entered 12-digit Aadhaar number.
+- Aadhaar document upload and secure administrator-only document review. No OCR or automatic Aadhaar-document matching is performed.
 - Duplicate Aadhaar and mobile checks.
 - Admin login, dashboard, volunteer database, search, approval/rejection, batch assignment, audit logging and ID cards.
 - Full Aadhaar is encrypted at rest and masked by default. Authorized reveal/document viewing is logged.
 - QR code contains only a volunteer verification URL, never Aadhaar data.
 
 ## Important
-The camera capture is not biometric anti-spoofing and OCR matching is not official UIDAI authentication. Do not describe the system as UIDAI authentication unless an authorized UIDAI service is actually integrated.
+The camera capture is not biometric anti-spoofing. It only ensures the volunteer captured a photo through the browser camera rather than selecting a gallery file.
 
 Do not commit `.env` files or real Aadhaar documents to GitHub.
+
+
+## Approval workflow
+Registrations are NEVER automatically approved. Every registration starts as SUBMITTED and must be reviewed by an administrator. The administrator can APPROVE or REJECT it. Rejected records and their uploaded documents are retained; nothing is deleted by the rejection action. An ID card can only be generated after approval, and the volunteer can open it from the public status page using their Volunteer ID.
+
+The Aadhaar upload is stored for authorized administrator review, but this build does not perform OCR or automatic Aadhaar/document matching.
