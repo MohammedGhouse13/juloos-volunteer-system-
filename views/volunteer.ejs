@@ -1,90 +1,9 @@
 <%- include('partials-head',{title,appName}) %>
-<div class="page-head">
-  <div>
-    <span class="pill"><%= volunteer.registration_number %></span>
-    <h1><%= volunteer.full_name %></h1>
-    <p><%= volunteer.volunteer_id %></p>
-  </div>
+<div class="page-head"><div><span class="pill">ADMIN REVIEW</span><h1><%= volunteer.full_name %></h1><p><%= volunteer.registration_number %></p></div></div>
+<div class="card"><div class="grid two"><div><img class="review-photo" src="/admin/volunteer/<%= volunteer.id %>/photo" alt="Volunteer photo"><p><a href="/admin/volunteer/<%= volunteer.id %>/aadhaar" target="_blank">Open uploaded Aadhaar card</a></p><p><button class="btn outline" onclick="revealAadhaar()" type="button">Reveal Full Aadhaar</button></p><p id="aadhaarFull"></p></div><div><dl class="details"><dt>Registration</dt><dd><%= volunteer.registration_number %></dd><dt>Volunteer ID</dt><dd><%= volunteer.volunteer_id || 'Generated after approval' %></dd><dt>Full Name</dt><dd><%= volunteer.full_name %></dd><dt>Address / Place</dt><dd><%= volunteer.address %></dd><dt>WhatsApp</dt><dd><%= volunteer.whatsapp || volunteer.mobile %></dd><dt>Emergency</dt><dd><%= volunteer.emergency_mobile %></dd><dt>Age</dt><dd><%= volunteer.age %></dd><dt>Aadhaar</dt><dd><%= volunteer.masked_aadhaar %></dd><dt>Status</dt><dd><span class="badge <%= volunteer.approval_status.toLowerCase() %>"><%= volunteer.approval_status %></span></dd></dl></div></div>
+<% if(volunteer.approval_status==='SUBMITTED'){ %><div class="decision-grid"><form method="post" action="/admin/volunteer/<%= volunteer.id %>/decision"><input type="hidden" name="decision" value="APPROVED"><button class="btn green large">✓ APPROVE</button></form><form method="post" action="/admin/volunteer/<%= volunteer.id %>/decision"><input type="hidden" name="decision" value="REJECTED"><input name="reason" placeholder="Rejection reason" required><button class="btn red">REJECT</button></form></div><% } %>
+<% if(volunteer.approval_status==='APPROVED'){ %><div class="notice success"><strong>Approved.</strong> Volunteer ID: <b><%= volunteer.volunteer_id %></b></div><a class="btn gold" href="/admin/volunteer/<%= volunteer.id %>/id-card" target="_blank">Generate / Print ID Card</a><% } %>
+<% if(volunteer.approval_status==='REJECTED'){ %><div class="alert danger"><strong>Rejected.</strong> <%= volunteer.rejection_reason %><br><small>The record and submitted files have not been deleted.</small></div><% } %>
 </div>
-
-<div class="grid two">
-  <div class="card profile">
-    <img class="profile-photo" src="/admin/volunteer/<%= volunteer.id %>/photo" alt="Volunteer Profile photo">
-    <div class="details">
-      <p><b>Full name:</b> <%= volunteer.full_name %></p>
-      <p><b>Mobile:</b> <%= volunteer.mobile %> <a class="wa" target="_blank" rel="noopener" href="https://wa.me/91<%= volunteer.whatsapp||volunteer.mobile %>">WhatsApp</a></p>
-      <p><b>WhatsApp:</b> <%= volunteer.whatsapp||volunteer.mobile %></p>
-      <p><b>Age:</b> <%= volunteer.age||'—' %></p>
-      <p><b>Gender:</b> <%= volunteer.gender||'—' %></p>
-      <p><b>Area / Locality:</b> <%= volunteer.area||'—' %></p>
-      <p><b>Address:</b> <%= volunteer.address||'—' %></p>
-      <p><b>Volunteer Role:</b> <%= volunteer.volunteer_role||'—' %></p>
-      <p><b>Emergency Contact:</b> <%= volunteer.emergency_name||'—' %> · <%= volunteer.emergency_mobile||'—' %></p>
-      <p><b>Masked Aadhaar:</b> <%= volunteer.masked_aadhaar %>
-        <button type="button" class="smallbtn" onclick="revealAadhaar()">Reveal full number</button>
-      </p>
-      <p id="revealed" class="secret"></p>
-      <p><b>Registered:</b> <%= new Date(volunteer.created_at).toLocaleString() %></p>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>Application</h2>
-    <p><b>Status:</b> <span class="badge <%= volunteer.approval_status.toLowerCase() %>"><%= volunteer.approval_status %></span></p>
-
-    <div class="actions">
-      <form method="post" action="/admin/volunteer/<%= volunteer.id %>/decision">
-        <input type="hidden" name="decision" value="APPROVED">
-        <button class="btn gold">Approve</button>
-      </form>
-      <form method="post" action="/admin/volunteer/<%= volunteer.id %>/decision" onsubmit="return rejectIt(this)">
-        <input type="hidden" name="decision" value="REJECTED">
-        <input type="hidden" name="reason" id="rejectReason">
-        <button class="btn dangerbtn">Reject</button>
-      </form>
-    </div>
-    <% if(volunteer.approval_status==='REJECTED'){ %>
-      <div class="alert danger">
-        <strong>Rejected.</strong>
-        <% if(volunteer.rejection_reason){ %>
-          <p>Reason: <%= volunteer.rejection_reason %></p>
-        <% } %>
-        <p>The complete registration remains stored. Nothing has been deleted.</p>
-      </div>
-    <% } %>
-
-</div>
-
-<div class="card">
-  <h2>Batch Assignment</h2>
-  <form method="post" action="/admin/volunteer/<%= volunteer.id %>/batch" class="searchbar">
-    <select name="batch_id">
-      <option value="">No batch</option>
-      <% batches.forEach(b=>{ %>
-        <option value="<%= b.id %>" <%= volunteer.batch_id==b.id?'selected':'' %>><%= b.batch_code %> · <%= b.batch_name %></option>
-      <% }) %>
-    </select>
-    <button class="btn gold">Assign Batch</button>
-  </form>
-
-  <% if(volunteer.approval_status==='APPROVED'){ %>
-    <a class="btn outline" target="_blank" href="/admin/volunteer/<%= volunteer.id %>/id-card">Generate / Print ID Card</a>
-  <% } else { %>
-    <div class="notice">ID card is locked until the administrator approves this registration.</div>
-  <% } %>
-</div>
-
-<script>
-async function revealAadhaar(){
-  const r=await fetch('/admin/volunteer/<%= volunteer.id %>/reveal-aadhaar');
-  const j=await r.json();
-  document.getElementById('revealed').textContent = j.aadhaar ? 'Full Aadhaar: '+j.aadhaar : 'Unable to reveal Aadhaar.';
-}
-function rejectIt(f){
-  const r=prompt('Reason for rejection:');
-  if(!r) return false;
-  f.querySelector('#rejectReason').value=r;
-  return true;
-}
-</script>
+<script>async function revealAadhaar(){const r=await fetch('/admin/volunteer/<%= volunteer.id %>/reveal-aadhaar');const d=await r.json();document.getElementById('aadhaarFull').textContent=r.ok?('Full Aadhaar: '+d.aadhaar):'Unable to reveal Aadhaar';}</script>
 <%- include('partials-foot') %>

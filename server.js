@@ -25,10 +25,11 @@ const pool = new Pool({
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_FILE_BYTES, files: 1 },
+  limits: { fileSize: MAX_FILE_BYTES, files: 2 },
   fileFilter: (req, file, cb) => {
-    const ok = ['image/jpeg','image/png','image/webp'].includes(file.mimetype);
-    cb(ok ? null : new Error('Profile photo must be a JPG, PNG or WEBP image.'));
+    const allowed = ['image/jpeg','image/png','image/webp','application/pdf'];
+    const ok = allowed.includes(file.mimetype);
+    cb(ok ? null : new Error('Use JPG, PNG, WEBP or PDF files only.'));
   }
 });
 
@@ -273,92 +274,62 @@ app.get('/',(req,res)=>res.render('home',{title:'Home'}));
 app.get('/register',(req,res)=>res.render('register',{title:'Volunteer Registration',error:null}));
 
 app.post('/register',
-  upload.single('live_photo'),
+  upload.fields([{name:'photo',maxCount:1},{name:'aadhaar_document',maxCount:1}]),
   async (req,res)=>{
   try {
     await dbReady;
     const f=req.body;
     const aadhaar=normalizeAadhaar(f.aadhaar);
-
-    // Aadhaar is validated only for format. The uploaded document is stored
-    // securely for authorized admin review. No automatic document matching is performed.
-    if(!/^[2-9]\d{11}$/.test(aadhaar)) {
-      throw new Error('Enter a valid 12-digit Aadhaar number.');
-    }
-
-    const photo=req.file;
-    if(!photo) throw new Error('Please capture your Profile photo using the camera.');
-    if(!photo.mimetype.startsWith('image/')) throw new Error('Profile photo must be an image.');
-    if(f.live_capture_confirm!=='1') throw new Error('Please capture the photo using the live camera.');
+    if(!/^[2-9]\d{11}$/.test(aadhaar)) throw new Error('Enter a valid 12-digit Aadhaar number.');
     if(f.consent!=='1') throw new Error('You must accept the consent before submitting.');
+
+    const photo=req.files?.photo?.[0];
+    const aadhaarDoc=req.files?.aadhaar_document?.[0];
+    if(!photo) throw new Error('Please upload a profile photo from your phone/gallery or computer.');
+    if(!['image/jpeg','image/png','image/webp'].includes(photo.mimetype)) throw new Error('Profile photo must be JPG, PNG or WEBP.');
+    if(!aadhaarDoc) throw new Error('Please upload the Aadhaar card image or PDF.');
+    if(!['image/jpeg','image/png','image/webp','application/pdf'].includes(aadhaarDoc.mimetype)) throw new Error('Aadhaar card must be JPG, PNG, WEBP or PDF.');
+
+    const name=String(f.full_name||'').trim();
+    const address=String(f.address||'').trim();
+    const whatsapp=String(f.whatsapp||'').replace(/\D/g,'');
+    const emergency=String(f.emergency_mobile||'').replace(/\D/g,'');
+    const age=Number(f.age);
+    if(!name||!address||!whatsapp||!emergency||!Number.isInteger(age)||age<12||age>80) throw new Error('Please complete all required personal details.');
+    if(!/^[6-9]\d{9}$/.test(whatsapp)) throw new Error('Enter a valid 10-digit WhatsApp number.');
+    if(!/^[6-9]\d{9}$/.test(emergency)) throw new Error('Enter a valid 10-digit emergency contact number.');
 
     const client=await pool.connect();
     try {
       await client.query('BEGIN');
       await client.query('LOCK TABLE volunteers IN SHARE ROW EXCLUSIVE MODE');
-
-      // Prevent duplicate Aadhaar registrations using the encrypted value.
-      const dup=await client.query(
-        `SELECT registration_number,aadhaar_ciphertext,aadhaar_iv,aadhaar_tag
-         FROM volunteers
-         WHERE aadhaar_last4=$1 AND aadhaar_ciphertext IS NOT NULL`,
-        [aadhaar.slice(-4)]
-      );
-
+      const dup=await client.query(`SELECT registration_number,aadhaar_ciphertext,aadhaar_iv,aadhaar_tag FROM volunteers WHERE aadhaar_last4=$1 AND aadhaar_ciphertext IS NOT NULL`,[aadhaar.slice(-4)]);
       for(const row of dup.rows){
-        try {
-          if(decryptText(row.aadhaar_ciphertext,row.aadhaar_iv,row.aadhaar_tag)===aadhaar) {
-            throw new Error('This Aadhaar number has already been registered.');
-          }
-        } catch(e) {
-          if(e.message==='This Aadhaar number has already been registered.') throw e;
-        }
+        try { if(decryptText(row.aadhaar_ciphertext,row.aadhaar_iv,row.aadhaar_tag)===aadhaar) throw new Error('This Aadhaar number has already been registered.'); }
+        catch(e){ if(e.message==='This Aadhaar number has already been registered.') throw e; }
       }
-
-      const mobile=String(f.mobile||'').trim();
-      const mobileDup=await client.query(
-        `SELECT registration_number FROM volunteers WHERE mobile=$1 LIMIT 1`,
-        [mobile]
-      );
-      if(mobileDup.rowCount) throw new Error('This mobile number has already been registered.');
+      const mobileDup=await client.query(`SELECT registration_number FROM volunteers WHERE mobile=$1 OR whatsapp=$1 LIMIT 1`,[whatsapp]);
+      if(mobileDup.rowCount) throw new Error('This WhatsApp number has already been registered.');
 
       const reg=await nextRegistrationNumber(client);
-      const vid=await nextVolunteerId(client);
       const enc=encryptText(aadhaar);
-
       const result=await client.query(`
         INSERT INTO volunteers (
-          registration_number, volunteer_id, full_name, mobile, whatsapp, age, gender, area, address,
-          emergency_name, emergency_mobile, volunteer_role, live_photo, live_photo_mime,
-          aadhaar_ciphertext, aadhaar_iv, aadhaar_tag, aadhaar_last4,
-          approval_status, consent_at
-        ) VALUES (
-          $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'SUBMITTED',NOW()
-        )
-        RETURNING id,registration_number,volunteer_id
-      `,[
-        reg,vid,String(f.full_name||'').trim(),mobile,
-        String(f.whatsapp||'').trim()||mobile,
-        Number(f.age)||null,f.gender||null,f.area||null,f.address||null,
-        f.emergency_name||null,f.emergency_mobile||null,f.volunteer_role||null,
-        photo.buffer,photo.mimetype,
-        enc.ciphertext,enc.iv,enc.tag,aadhaar.slice(-4)
-      ]);
-
+          registration_number, volunteer_id, full_name, mobile, whatsapp, age, area, address,
+          emergency_mobile, volunteer_role, live_photo, live_photo_mime, aadhaar_document, aadhaar_mime,
+          aadhaar_ciphertext, aadhaar_iv, aadhaar_tag, aadhaar_last4, approval_status, id_card_status, consent_at
+        ) VALUES ($1,NULL,$2,$3,$3,$4,NULL,$5,$6,NULL,$7,$8,$9,$10,$11,$12,$13,$14,'SUBMITTED','PENDING',NOW())
+        RETURNING id,registration_number`,[
+          reg,name,whatsapp,age,address,emergency,photo.buffer,photo.mimetype,aadhaarDoc.buffer,aadhaarDoc.mimetype,
+          enc.ciphertext,enc.iv,enc.tag,aadhaar.slice(-4)
+        ]);
       await client.query('COMMIT');
       res.render('submitted',{title:'Registration Submitted',registration:result.rows[0]});
-    } catch(e) {
-      await client.query('ROLLBACK');
-      throw e;
-    } finally {
-      client.release();
-    }
+    } catch(e) { await client.query('ROLLBACK'); throw e; }
+    finally { client.release(); }
   } catch(e) {
     console.error('Registration error:',e);
-    res.status(400).render('register',{
-      title:'Volunteer Registration',
-      error:e.message||'Registration failed.'
-    });
+    res.status(400).render('register',{title:'Volunteer Registration',error:e.message||'Registration failed.'});
   }
 });
 
@@ -367,7 +338,8 @@ app.post('/status',async(req,res)=>{
   try{
     await dbReady;
     const q=String(req.body.registration||'').trim();
-    const r=await pool.query(`SELECT registration_number,volunteer_id,full_name,approval_status,rejection_reason,batch_id,id_card_status,created_at FROM volunteers WHERE registration_number=$1 OR volunteer_id=$1 LIMIT 1`,[q]);
+    const whatsapp=String(req.body.whatsapp||'').replace(/\D/g,'');
+    const r=await pool.query(`SELECT registration_number,volunteer_id,full_name,whatsapp,approval_status,rejection_reason,batch_id,id_card_status,created_at FROM volunteers WHERE (registration_number=$1 OR volunteer_id=$1) AND whatsapp=$2 LIMIT 1`,[q,whatsapp]);
     if(!r.rowCount) return res.render('status',{title:'Check Registration',result:null,error:'Registration not found.'});
     let row=r.rows[0];
     let batch=null;
@@ -436,6 +408,12 @@ app.get('/admin/volunteer/:id/photo',requireAdmin,async(req,res)=>{
   const r=await pool.query('SELECT live_photo,live_photo_mime FROM volunteers WHERE id=$1',[req.params.id]);
   if(!r.rowCount) return res.sendStatus(404); res.set('Cache-Control','private,no-store').type(r.rows[0].live_photo_mime).send(r.rows[0].live_photo);
 });
+app.get('/admin/volunteer/:id/aadhaar',requireAdmin,async(req,res)=>{
+  const r=await pool.query('SELECT aadhaar_document,aadhaar_mime FROM volunteers WHERE id=$1',[req.params.id]);
+  if(!r.rowCount||!r.rows[0].aadhaar_document) return res.sendStatus(404);
+  res.set('Cache-Control','private,no-store').type(r.rows[0].aadhaar_mime||'application/octet-stream').send(r.rows[0].aadhaar_document);
+});
+
 app.get('/admin/volunteer/:id/reveal-aadhaar',requireAdmin,async(req,res)=>{
   const r=await pool.query('SELECT aadhaar_ciphertext,aadhaar_iv,aadhaar_tag FROM volunteers WHERE id=$1',[req.params.id]);
   if(!r.rowCount) return res.sendStatus(404);
@@ -449,15 +427,13 @@ app.post('/admin/volunteer/:id/decision',requireAdmin,async(req,res)=>{
   if(!['APPROVED','REJECTED'].includes(decision)) return res.status(400).send('Invalid decision');
   const reason=String(req.body.reason||'').trim();
   if(decision==='REJECTED'&&!reason) return res.status(400).send('A rejection reason is required.');
-  const r=await pool.query(
-    `UPDATE volunteers
-     SET approval_status=$1,
-         rejection_reason=$2,
-         updated_at=NOW()
-     WHERE id=$3
-     RETURNING volunteer_id`,
-    [decision, decision==='REJECTED' ? reason : null, req.params.id]
-  );
+  let r;
+  if(decision==='APPROVED') {
+    const vid=await nextVolunteerId(pool);
+    r=await pool.query(`UPDATE volunteers SET approval_status='APPROVED', volunteer_id=COALESCE(volunteer_id,$1), rejection_reason=NULL, updated_at=NOW() WHERE id=$2 RETURNING volunteer_id`,[vid,req.params.id]);
+  } else {
+    r=await pool.query(`UPDATE volunteers SET approval_status='REJECTED', rejection_reason=$1, updated_at=NOW() WHERE id=$2 RETURNING volunteer_id`,[reason,req.params.id]);
+  }
   if(!r.rowCount) return res.sendStatus(404);
   await pool.query('INSERT INTO audit_logs(action,volunteer_id,admin_email,details) VALUES($1,$2,$3,$4)',['STATUS_CHANGE',req.params.id,req.admin.email,`${decision}${reason?': '+reason:''}`]);
   res.redirect('/admin/volunteer/'+req.params.id);
@@ -490,7 +466,8 @@ app.get('/admin/volunteer/:id/id-card',requireAdmin,async(req,res)=>{
   if(v.approval_status!=='APPROVED') return res.status(400).send('Only approved volunteers can receive an ID card.');
   await pool.query(`UPDATE volunteers SET id_card_status='GENERATED',updated_at=NOW() WHERE id=$1`,[req.params.id]);
   const QRCode = require('qrcode');
-  const verifyUrl = `${process.env.BASE_URL || `http://localhost:${PORT}`}/verify/${v.volunteer_id}`;
+  const baseUrl = (process.env.BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+  const verifyUrl = `${baseUrl}/verify/${v.volunteer_id}`;
   const qrDataUrl = await QRCode.toDataURL(verifyUrl, { width: 220, margin: 1 });
   res.render('idcard',{title:'Volunteer ID Card',v,qrDataUrl});
 });
@@ -524,7 +501,8 @@ app.get('/volunteer/:volunteerId/id-card',async(req,res)=>{
     );
 
     const QRCode = require('qrcode');
-    const verifyUrl = `${process.env.BASE_URL || `http://localhost:${PORT}`}/verify/${v.volunteer_id}`;
+    const baseUrl = (process.env.BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+  const verifyUrl = `${baseUrl}/verify/${v.volunteer_id}`;
     const qrDataUrl = await QRCode.toDataURL(verifyUrl,{width:220,margin:1});
 
     res.render('idcard',{title:'Volunteer ID Card',v,qrDataUrl});
@@ -532,6 +510,12 @@ app.get('/volunteer/:volunteerId/id-card',async(req,res)=>{
     console.error('Public ID card error:',e);
     res.status(500).render('error',{title:'ID Card Error',message:'Unable to generate the ID card right now.'});
   }
+});
+
+app.get('/volunteer/:volunteerId/photo',async(req,res)=>{
+  const r=await pool.query('SELECT live_photo,live_photo_mime,approval_status FROM volunteers WHERE volunteer_id=$1',[req.params.volunteerId]);
+  if(!r.rowCount||r.rows[0].approval_status!=='APPROVED'||!r.rows[0].live_photo) return res.sendStatus(404);
+  res.set('Cache-Control','private,no-store').type(r.rows[0].live_photo_mime).send(r.rows[0].live_photo);
 });
 
 app.get('/verify/:volunteerId',async(req,res)=>{

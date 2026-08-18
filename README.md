@@ -1,45 +1,37 @@
-# Juloos Volunteer Management System
+# Juloos Volunteer Registration — Final Prototype
 
-Production-oriented Node.js/Express/PostgreSQL volunteer registration portal.
+## Current workflow
+Volunteer → Registration → PENDING → Admin Review → APPROVE/REJECT → Approved Volunteer ID → Reference-style printable ID card.
 
-## Render deployment
+### Volunteer fields
+- Full Name
+- Age
+- WhatsApp Number
+- Emergency Contact Number
+- Address / Place
+- Aadhaar Number
+- Aadhaar Card upload (JPG/PNG/WEBP/PDF)
+- Profile Photo upload (JPG/PNG/WEBP)
+- Consent
 
-### Existing Render web service
-Use:
-- Build: `npm install`
-- Start: `npm start`
-- Node: 20.20.2 (via `.nvmrc`)
+No gender field. No camera capture. No Aadhaar OCR or automatic Aadhaar/document matching. No automatic approval.
 
-Environment variables:
-- `DATABASE_URL` — Render PostgreSQL Internal Database URL
-- `ADMIN_EMAIL` — administrator email
-- `ADMIN_PASSWORD` — administrator password
-- `SESSION_SECRET` — long random secret
-- `DATA_ENCRYPTION_KEY` — long random secret used to encrypt Aadhaar numbers
-- `NODE_ENV=production`
-- `MAX_UPLOAD_MB=10`
+### Admin
+- Login
+- Dashboard
+- Review submitted records
+- View uploaded photo and Aadhaar document
+- Reveal full Aadhaar with audit logging
+- Approve or reject with reason
+- Approved records receive Volunteer ID
+- Generate/print ID card
+- QR verification
+- Rejected records remain stored; nothing is deleted by the decision action
 
-### Existing database migration
-This version automatically migrates the `volunteers`, `batches`, and `audit_logs` tables at startup. It is specifically compatible with older database schemas and adds missing columns such as `mobile` before creating indexes.
+## Render
+Build: `npm install`
+Start: `npm start`
 
-### Fresh Blueprint deployment
-The included `render.yaml` can create a web service and PostgreSQL database together via Render Blueprint. Set `ADMIN_EMAIL` and `ADMIN_PASSWORD` when prompted.
+Required: DATABASE_URL, ADMIN_EMAIL, ADMIN_PASSWORD, SESSION_SECRET, DATA_ENCRYPTION_KEY.
 
-## Features
-- Aadhaar number capture and secure administrator-only review. No Aadhaar document upload, OCR, or automatic matching is performed.
-- Duplicate Aadhaar and mobile checks.
-- Admin login, dashboard, volunteer database, search, approval/rejection, batch assignment, audit logging and ID cards.
-- Full Aadhaar is encrypted at rest and masked by default. Authorized reveal/document viewing is logged.
-- QR code contains only a volunteer verification URL, never Aadhaar data.
-
-## Important
-
-Do not commit `.env` files or real Aadhaar numbers to GitHub.
-
-
-## Approval workflow
-Registrations are NEVER automatically approved. Every registration starts as SUBMITTED and must be reviewed by an administrator. The administrator can APPROVE or REJECT it. Rejected records and their uploaded documents are retained; nothing is deleted by the rejection action. An ID card can only be generated after approval, and the volunteer can open it from the public status page using their Volunteer ID.
-
-No Aadhaar document is uploaded or stored by new registrations. The application stores the Aadhaar number securely for authorized administrator review and does not perform OCR or automatic matching.
-
-Photo registration: volunteers may upload a profile photo of their choice (JPG/PNG/WebP). Camera capture is not required.
+Do not commit real Aadhaar documents, photos, passwords, or database credentials to GitHub.
