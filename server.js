@@ -25,12 +25,7 @@ const pool = new Pool({
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_FILE_BYTES, files: 2 },
-  fileFilter: (req, file, cb) => {
-    const allowed = ['image/jpeg','image/png','image/webp','application/pdf'];
-    const ok = allowed.includes(file.mimetype);
-    cb(ok ? null : new Error('Use JPG, PNG, WEBP or PDF files only.'));
-  }
+  limits: { fileSize: 12 * 1024 * 1024 }
 });
 
 app.set('view engine', 'ejs');

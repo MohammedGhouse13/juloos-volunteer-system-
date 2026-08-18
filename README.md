@@ -35,3 +35,7 @@ Start: `npm start`
 Required: DATABASE_URL, ADMIN_EMAIL, ADMIN_PASSWORD, SESSION_SECRET, DATA_ENCRYPTION_KEY.
 
 Do not commit real Aadhaar documents, photos, passwords, or database credentials to GitHub.
+
+
+## Profile photo upload
+The profile photo is a normal file upload. Camera capture is not used, and the browser MIME filter has been removed. The server accepts the selected file and stores its bytes with the volunteer record (maximum 12 MB).
